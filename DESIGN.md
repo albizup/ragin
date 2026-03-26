@@ -48,41 +48,39 @@ CRUD automatico, agent automatico. Ogni parte è sovrascrivibile.
 ```python
 from ragin import ServerlessApp, Model, Field, resource, agent
 from ragin.providers import OpenAIProvider
-from uuid import UUID
 
 app = ServerlessApp()
 
 
 @resource(operations=["crud"])
-class Player(Model):
-    id: UUID = Field(primary_key=True)
+class User(Model):
+    id: str = Field(primary_key=True)
     name: str
-    age: int
-    team: str
+    email: str
+    role: str = "member"
 
 
 @agent(
-    model=Player,
+    model=User,
     provider=OpenAIProvider(model="gpt-4o"),
-    description="Manages player records. Can create, list, retrieve, update and delete players.",
+    description="Manages user records. Can create, list, retrieve, update and delete users.",
 )
-class PlayerAgent:
+class UserAgent:
     pass
 
 
-app.register(Player)
-app.register_agent(PlayerAgent)
+app.register_agent(UserAgent)
 ```
 
 Quello che viene generato automaticamente:
 
 | Layer         | Output                                                        |
 |---------------|---------------------------------------------------------------|
-| Database      | Tabella `players` con colonne tipizzate                       |
-| CRUD API      | `POST/GET /players`, `GET/PATCH/DELETE /players/{id}`         |
-| MCP Server    | Lambda MCP con tool `create_player`, `list_players`, ecc.    |
-| Agent         | Lambda agent su `POST /players/agent`                         |
-| System Prompt | Generato dallo schema del modello + `description`            |
+| Database      | Tabella `users` con colonne tipizzate                         |
+| CRUD API      | `POST/GET /users`, `GET/PATCH/DELETE /users/{id}`             |
+| MCP Server    | Lambda MCP con tool `create_user`, `list_users`, ecc.         |
+| Agent         | Lambda agent su `POST /users/agent`                           |
+| System Prompt | Generato dallo schema del modello + `description`             |
 | OpenAPI       | `openapi.json` completo                                       |
 
 ---
@@ -96,10 +94,10 @@ Client
   │
   ▼
 API Gateway
-  ├── /players          →  CRUD Lambda
-  ├── /players/{id}     →  CRUD Lambda
-  ├── /players/agent    →  Agent Lambda
-  └── /mcp              →  MCP Lambda
+  ├── /users          →  CRUD Lambda
+  ├── /users/{id}     →  CRUD Lambda
+  ├── /users/agent    →  Agent Lambda
+  └── /mcp            →  MCP Lambda
 ```
 
 Ogni blocco è una Lambda indipendente. Non c'è un server condiviso.
@@ -165,11 +163,11 @@ e mantiene tutto serverless.
 ### Definizione
 
 ```python
-class Player(Model):
-    id: UUID = Field(primary_key=True)
+class User(Model):
+    id: str = Field(primary_key=True)
     name: str
-    age: int
-    team: str = Field(nullable=True, index=True)
+    email: str = Field(unique=True)
+    role: str = "member"
 ```
 
 ### Field Options
@@ -193,23 +191,32 @@ Field(
 
 ```python
 @resource(
-    name="players",                                           # default: plurale del nome classe
+    name="users",                                              # default: plurale del nome classe
     operations=["create", "list", "retrieve", "update", "delete"],  # oppure: ["crud"]
-    path_prefix="/v1",                                        # opzionale
+    path_prefix="/v1",                                         # opzionale
 )
-class Player(Model):
+class User(Model):
     ...
 ```
 
 ### Operazioni generate
 
-| Operation  | Method | Path             |
-|------------|--------|------------------|
-| `create`   | POST   | `/players`       |
-| `list`     | GET    | `/players`       |
-| `retrieve` | GET    | `/players/{id}`  |
-| `update`   | PATCH  | `/players/{id}`  |
-| `delete`   | DELETE | `/players/{id}`  |
+| Operation  | Method | Path            |
+|------------|--------|-----------------|
+| `create`   | POST   | `/users`        |
+| `list`     | GET    | `/users`        |
+| `retrieve` | GET    | `/users/{id}`   |
+| `update`   | PATCH  | `/users/{id}`   |
+| `delete`   | DELETE | `/users/{id}`   |
+
+### Error Handling
+
+| Scenario            | Status | Body                                    |
+|---------------------|--------|-----------------------------------------|
+| Validation error    | 400    | `{"error": [...pydantic errors...]}`    |
+| Not found           | 404    | `{"error": "Not found"}`               |
+| Duplicate PK        | 409    | `{"error": "Resource with that key already exists."}` |
+| Internal error      | 500    | `{"error": "Internal server error"}`   |
 
 ### Endpoint custom
 
@@ -220,18 +227,18 @@ def health(request):
     return {"ok": True}
 
 # resource-specific
-@Player.get("/{id}/stats")
-def player_stats(request, id: UUID):
-    return {"player_id": id, "goals": ...}
+@User.get("/{id}/profile")
+def user_profile(request):
+    return {"user_id": request.path_params["id"]}
 ```
 
-### Hooks
+### Hooks (V2+)
 
 ```python
-@hook(Player, "before_create")
-def validate_age(data: Player) -> Player:
-    if data.age < 16:
-        raise ValidationError("Player too young")
+@hook(User, "before_create")
+def validate_email(data: User) -> User:
+    if "@" not in data.email:
+        raise ValidationError("Invalid email")
     return data
 ```
 
@@ -243,34 +250,34 @@ def validate_age(data: Player) -> Player:
 
 ```python
 @agent(
-    model=Player,                        # modello di riferimento (o lista di modelli)
+    model=User,                          # modello di riferimento (o lista di modelli)
     provider=OpenAIProvider(...),        # LLM provider
     description="...",                   # aggiunto al system prompt
     tools=["crud"],                      # tool abilitati: "crud", lista operazioni, o custom
     history_backend=None,                # None = stateless, "dynamodb" = history persistente
 )
-class PlayerAgent:
+class UserAgent:
     pass
 ```
 
 L'agente genera automaticamente:
 - **system prompt** dal nome del modello, campi, descrizioni dei Field e `description`
 - **tool schema** MCP per ogni operazione abilitata
-- **endpoint** `POST /players/agent`
+- **endpoint** `POST /users/agent`
 
 ### Request/Response
 
 ```python
 # Request
-POST /players/agent
+POST /users/agent
 {
-  "message": "Crea un giocatore di nome Marco, 22 anni, team Juventus",
+  "message": "Crea un utente Alice con email alice@example.com e ruolo admin",
   "thread_id": "abc123"    // opzionale, per history
 }
 
 # Response
 {
-  "message": "Ho creato il giocatore Marco con successo.",
+  "message": "Ho creato l'utente Alice con successo.",
   "tool_calls": [...],     // opzionale, per debug
   "thread_id": "abc123"
 }
@@ -279,9 +286,9 @@ POST /players/agent
 ### Tool custom per l'agente
 
 ```python
-@PlayerAgent.tool
-def player_ranking(age_min: int, limit: int = 10) -> list[dict]:
-    """Ritorna i migliori giocatori per fascia d'età."""
+@UserAgent.tool
+def users_by_role(role: str, limit: int = 10) -> list[dict]:
+    """Ritorna gli utenti con un dato ruolo."""
     ...
 ```
 
@@ -399,10 +406,10 @@ Il MCP server ragin è compatibile con qualsiasi client MCP standard:
 ### CLI
 
 ```bash
+ragin start myproject # scaffold nuovo progetto con main.py, settings.py, models/
+ragin dev             # server locale per sviluppo (legge settings.py)
 ragin build           # pacchetto Lambda, routes.json, openapi.json, mcp-manifest.json
-ragin export-routes   # stampa routes.json su stdout
-ragin deploy          # deploy su AWS (CDK under the hood)
-ragin dev             # server locale per sviluppo
+ragin deploy          # deploy su AWS (CDK under the hood) — futuro
 ```
 
 ### Output di `ragin build`
@@ -440,7 +447,7 @@ ragin genera i file di infrastruttura. Il deploy crea:
 
 ---
 
-## 11. Struttura del Progetto
+## 11. Struttura del Framework
 
 ```
 ragin/
@@ -450,25 +457,37 @@ ragin/
     fields.py         # Field
     routing.py        # RouteDefinition, Router
     registry.py       # registro globale di modelli, agenti, tool
-    requests.py       # InternalRequest
-    responses.py      # InternalResponse
+    requests.py       # InternalRequest (cloud-agnostic)
+    responses.py      # InternalResponse (cloud-agnostic)
+
+  conf/
+    __init__.py       # re-export settings
+    settings.py       # Settings loader (Django-style, lazy)
 
   resource/
     crud.py           # generazione handler CRUD
-    hooks.py          # sistema hook before/after
+    decorator.py      # @resource
+    hooks.py          # sistema hook before/after (V2+)
 
-  agent/
+  runtime/
+    base.py           # BaseRuntimeProvider ABC
+    aws.py            # AWSProvider (API Gateway V2)
+    gcp.py            # GCPProvider (Cloud Functions HTTP)
+    azure.py          # AzureProvider (Azure Functions)
+    local.py          # LocalProvider (dev/test)
+
+  agent/              # V2
     decorator.py      # @agent
     runner.py         # loop agente (LLM + tool calls)
     prompt.py         # generazione system prompt da schema
     history.py        # backend per conversation history
 
-  mcp/
+  mcp/                # V3
     server.py         # MCP Lambda handler
     tools.py          # generazione tool schema da modelli
     transport.py      # Streamable HTTP transport
 
-  providers/
+  providers/          # V2
     base.py           # BaseProvider
     openai.py
     anthropic.py
@@ -477,29 +496,67 @@ ragin/
     pydantic_ai.py
 
   persistence/
-    base.py
-    sql.py            # SQLAlchemy backend
+    base.py           # BaseBackend ABC
+    sql.py            # SQLAlchemy Core backend
+    schema.py         # generazione Table da Model
     dynamodb.py       # DynamoDB backend (futuro)
 
   cli/
-    main.py           # ragin build / deploy / dev
+    main.py           # ragin start / dev / build
+    scaffold.py       # project scaffolding (ragin start)
+    dev_server.py     # Werkzeug WSGI dev server
+    builder.py        # ragin build
 
-  deploy/
+  deploy/             # futuro
     aws_cdk.py        # CDK stack generata
     terraform.py      # Terraform output (futuro)
 ```
+
+### Struttura Progetto Utente (generata da `ragin start`)
+
+```
+myproject/
+├── main.py              # ServerlessApp + import modelli
+├── settings.py          # DATABASE_URL, PROVIDER, HOST, PORT, DEBUG
+└── models/
+    ├── __init__.py      # registry dei modelli
+    └── user.py          # modello User di esempio
+```
+
+### Settings (Django-style)
+
+`settings.py` è un modulo Python. Tutte le variabili UPPER_CASE sono caricate come
+configurazione del framework. Override possibile via env var con prefisso `RAGIN_`.
+
+```python
+# settings.py
+DATABASE_URL = "sqlite:///./ragin_dev.db"
+PROVIDER = "local"       # local | aws | gcp | azure
+DEBUG = True
+HOST = "127.0.0.1"
+PORT = 8000
+```
+
+Precedenza (highest wins):
+1. Env var `RAGIN_DATABASE_URL` ecc.
+2. `settings.py`
+3. Default built-in
 
 ---
 
 ## 12. Roadmap
 
-### V1 — Core
-- [ ] Model + Field
-- [ ] `@resource` con CRUD automatico
-- [ ] Single CRUD Lambda handler
-- [ ] SQL backend (SQLite dev, PostgreSQL prod)
-- [ ] `ragin build` + `ragin dev`
-- [ ] AWS CDK deploy
+### V1 — Core ✅
+- [x] Model + Field (Pydantic v2, json_schema_extra)
+- [x] `@resource` con CRUD automatico (5 operazioni)
+- [x] Cloud-agnostic runtime provider layer (AWS, GCP, Azure, Local)
+- [x] SQL backend (SQLAlchemy Core — SQLite dev, PostgreSQL prod)
+- [x] `ragin build --provider aws|gcp|azure` + `ragin dev`
+- [x] `ragin start` — scaffolding progetto (main.py + settings.py + models/)
+- [x] `settings.py` Django-style con lazy loading e env var override
+- [x] Error handling: 400 validation, 404 not found, 409 conflict (duplicate PK), 500 internal
+- [x] Custom endpoints (`@app.get`, `@User.get`)
+- [x] Selective operations (`operations=["create", "list", "retrieve"]`)
 
 ### V2 — Agent + MCP
 - [ ] `@agent` decorator
@@ -516,14 +573,15 @@ ragin/
 - [ ] Multi-model agent
 - [ ] Auth/permissions
 - [ ] Migration engine
-- [ ] Multi-cloud (GCP Cloud Run, Azure Functions)
+- [ ] `ragin deploy` (IaC automatico)
+- [ ] Streaming LLM response
 
 ---
 
 ## 13. Non-Goals (V1)
 
 - Complex SQL join automatici
-- Multi-cloud immediato
 - Auth avanzata built-in
 - Migrations automatiche
+- Deploy automatico (V1 produce solo i file)
 - Streaming LLM response (V3)

@@ -7,15 +7,19 @@
 ## Scope V1
 
 Cosa è incluso:
-- `Model` + `Field` (Pydantic-based)
-- `@resource` decorator con generazione CRUD automatica
+- `Model` + `Field` (Pydantic-based, metadati via `json_schema_extra`)
+- `@resource` decorator con generazione CRUD automatica (5 operazioni)
 - `ServerlessApp` con routing interno **cloud-agnostic**
 - **Runtime provider layer** — adatta il formato evento/risposta del cloud specifico
 - Runtime provider built-in: `aws`, `gcp`, `azure`, `local`
 - SQL backend (SQLite dev, PostgreSQL prod) via SQLAlchemy Core
-- Custom endpoint (`@app.get`, `@app.post`, ecc.)
-- `ragin dev` — server locale per sviluppo
+- Custom endpoint (`@app.get`, `@app.post`, `@User.get`, ecc.)
+- `ragin start <name>` — scaffolding progetto con `main.py` + `settings.py` + `models/`
+- `ragin dev` — server locale per sviluppo (Werkzeug)
 - `ragin build --provider aws|gcp|azure` — genera il pacchetto deploiabile
+- `settings.py` Django-style con lazy loading e env var override (`RAGIN_*`)
+- Error handling: 400 (validation), 404 (not found), 409 (duplicate PK), 500 (internal)
+- Selective operations (`operations=["create", "list"]`)
 
 Cosa NON è incluso in V1:
 - `@agent`, MCP server, provider LLM
@@ -31,6 +35,9 @@ Cosa NON è incluso in V1:
 ```
 ragin/
   __init__.py              # export: ServerlessApp, Model, Field, resource
+  conf/
+    __init__.py            # re-export settings
+    settings.py            # Settings loader (Django-style, lazy)
   core/
     __init__.py
     app.py                 # ServerlessApp
@@ -44,7 +51,6 @@ ragin/
     __init__.py
     decorator.py           # @resource
     crud.py                # CrudHandlerFactory
-    operations.py          # operazioni supportate
   runtime/
     __init__.py
     base.py                # BaseRuntimeProvider ABC
@@ -59,11 +65,23 @@ ragin/
     schema.py              # generazione Table SQLAlchemy da Model
   cli/
     __init__.py
-    main.py                # entry point CLI: ragin dev / build
+    main.py                # entry point CLI: ragin start / dev / build
+    scaffold.py            # project scaffolding (ragin start)
     dev_server.py          # server WSGI locale (usa LocalProvider)
     builder.py             # ragin build
 
 pyproject.toml
+```
+
+### Struttura Progetto Utente (generata da `ragin start myproject`)
+
+```
+myproject/
+├── main.py              # ServerlessApp + import modelli
+├── settings.py          # DATABASE_URL, PROVIDER, HOST, PORT, DEBUG
+└── models/
+    ├── __init__.py      # registry dei modelli
+    └── user.py          # modello User di esempio
 ```
 
 ---
@@ -176,9 +194,9 @@ class Model(PydanticBaseModel):
 Il nome tabella è sovrascrivibile:
 
 ```python
-class Player(Model):
+class User(Model):
     class Meta:
-        table_name = "football_players"
+        table_name = "app_users"
 ```
 
 ---
@@ -292,7 +310,7 @@ def _parse_operations(ops: list[str]) -> list[str]:
     return ops
 ```
 
-### Come funziona `@Player.get("/{id}/stats")`
+### Come funziona `@User.get("/{id}/profile")`
 
 ```python
 def _resource_route(method: str, model_cls: type, sub_path: str):
@@ -333,10 +351,17 @@ class CrudHandlerFactory:
     def create_handler(self):
         model_cls = self.model_cls
         def handler(request: InternalRequest) -> InternalResponse:
-            data = model_cls.model_validate(request.json_body)
-            backend = get_backend()
-            record = backend.insert(model_cls, data.model_dump())
-            return InternalResponse.ok(record)
+            from pydantic import ValidationError
+            from sqlalchemy.exc import IntegrityError
+            try:
+                data = model_cls.model_validate(request.json_body)
+            except ValidationError as exc:
+                return InternalResponse.bad_request(exc.errors())
+            try:
+                record = get_backend().insert(model_cls, data.model_dump())
+            except IntegrityError:
+                return InternalResponse.conflict("Resource with that key already exists.")
+            return InternalResponse.created(record)
         return handler
 
     def list_handler(self):
@@ -449,6 +474,10 @@ class InternalResponse:
     @classmethod
     def no_content(cls) -> "InternalResponse":
         return cls(status_code=204, body=None)
+
+    @classmethod
+    def conflict(cls, message="Conflict") -> "InternalResponse":
+        return cls(status_code=409, body={"error": message})
 
     @classmethod
     def internal_error(cls, message="Internal server error") -> "InternalResponse":
@@ -625,7 +654,6 @@ Determinato in ordine:
 ```python
 # ragin/runtime/__init__.py
 
-import os
 from ragin.runtime.aws import AWSProvider
 from ragin.runtime.gcp import GCPProvider
 from ragin.runtime.azure import AzureProvider
@@ -639,7 +667,8 @@ _PROVIDERS = {
 }
 
 def get_default_provider():
-    name = os.environ.get("RAGIN_PROVIDER", "local")
+    from ragin.conf import settings
+    name = settings.PROVIDER.lower()
     cls = _PROVIDERS.get(name)
     if cls is None:
         raise ValueError(f"Unknown RAGIN_PROVIDER: {name}. Choose: {list(_PROVIDERS)}")
@@ -651,7 +680,7 @@ def get_default_provider():
 ## 6. Router
 
 Il router matcha `(method, path)` della request alla `RouteDefinition` giusta.
-Supporta path params (es. `/players/{id}`).
+Supporta path params (es. `/users/{id}`).
 
 ```python
 # ragin/core/routing.py
@@ -787,18 +816,25 @@ L'utente **non scrive mai** `lambda_handler`, `def main(request)` ecc.
 ```python
 # main.py (file dell'utente)
 
-from ragin import ServerlessApp, Model, Field, resource
-from uuid import UUID
+from ragin import ServerlessApp
+from models import *  # noqa: F401, F403
 
 app = ServerlessApp()
+```
+
+```python
+# models/user.py
+from ragin import Field, Model, resource
 
 @resource(operations=["crud"])
-class Player(Model):
-    id: UUID = Field(primary_key=True)
+class User(Model):
+    id: str = Field(primary_key=True)
     name: str
-    age: int
+    email: str
+```
 
-# Entry point cloud-agnostic.
+```python
+# Entry point cloud-agnostic (generato da ragin build).
 # RAGIN_PROVIDER=aws  →  handler è compatibile con Lambda
 # RAGIN_PROVIDER=gcp  →  handler è compatibile con Cloud Functions
 # RAGIN_PROVIDER=azure → handler è compatibile con Azure Functions
@@ -973,38 +1009,32 @@ def _pk_column(table: sa.Table) -> sa.Column:
 
 ### 8.3 Configurazione backend
 
-Il backend è configurato una volta sola tramite variabile d'ambiente o chiamata esplicita:
+Il backend è configurato automaticamente dal sistema `settings`. Se non configurato
+esplicitamente, `get_backend()` legge `settings.DATABASE_URL` al primo accesso.
 
 ```python
 # ragin/persistence/__init__.py
 
-import os
-from ragin.persistence.sql import SqlBackend
+from ragin.persistence.base import BaseBackend
 
-_backend = None
+_backend: BaseBackend | None = None
 
-def configure_backend(url: str):
+def configure_backend(url: str) -> None:
     global _backend
+    from ragin.persistence.sql import SqlBackend
     _backend = SqlBackend(url)
 
-def get_backend() -> SqlBackend:
+def get_backend() -> BaseBackend:
     global _backend
     if _backend is None:
-        url = os.environ.get("RAGIN_DB_URL", "sqlite:///./ragin_dev.db")
+        from ragin.conf import settings
+        url = settings.DATABASE_URL
+        from ragin.persistence.sql import SqlBackend
         _backend = SqlBackend(url)
     return _backend
 ```
 
-Nell'app utente:
-
-```python
-# main.py
-
-import os
-from ragin.persistence import configure_backend
-
-configure_backend(os.environ["DATABASE_URL"])
-```
+Non serve più configurare manualmente nell'app utente — `settings.py` è sufficiente.
 
 ---
 
@@ -1071,11 +1101,24 @@ def cli():
 
 
 @cli.command()
-@click.option("--app", default="main:app", help="Module:app_variable (es. main:app)")
-@click.option("--host", default="127.0.0.1")
-@click.option("--port", default=8000, type=int)
+@click.argument("name")
+def start(name):
+    """Crea un nuovo progetto ragin con scaffolding."""
+    from ragin.cli.scaffold import scaffold_project
+    path = scaffold_project(name)
+    click.echo(f"Created project at {path}")
+
+
+@cli.command()
+@click.option("--app", default=None, help="Module:app_variable (es. main:app)")
+@click.option("--host", default=None)
+@click.option("--port", default=None, type=int)
 def dev(app, host, port):
     """Avvia il server locale di sviluppo."""
+    from ragin.conf import settings
+    app = app or settings.APP
+    host = host or settings.HOST
+    port = port or settings.PORT
     module_name, attr = app.split(":", 1)
     mod = importlib.import_module(module_name)
     app_obj = getattr(mod, attr)
@@ -1087,13 +1130,16 @@ def dev(app, host, port):
 @cli.command()
 @click.option("--app", default="main:app")
 @click.option("--output", default="build/", help="Directory output")
-def build(app, output):
-    """Genera routes.json, openapi.json e pacchetto Lambda."""
+@click.option("--provider", default=None)
+def build(app, output, provider):
+    """Genera routes.json e entry point per il provider cloud."""
+    from ragin.conf import settings
+    provider = provider or settings.PROVIDER
     from ragin.cli.builder import build_app
     module_name, attr = app.split(":", 1)
     mod = importlib.import_module(module_name)
     app_obj = getattr(mod, attr)
-    build_app(app_obj, output_dir=output)
+    build_app(app_obj, output_dir=output, provider=provider)
 
 
 def main():
@@ -1166,6 +1212,181 @@ def build_app(app, output_dir: str, provider: str = "aws", module: str = "main")
 
 ---
 
+## 10b. Settings (Django-style)
+
+Il framework usa un sistema di configurazione ispirato a Django: un modulo Python
+(`settings.py`) contiene le variabili di configurazione come attributi UPPER_CASE.
+Il modulo è caricato **lazily** al primo accesso a qualsiasi attributo.
+
+```python
+# ragin/conf/settings.py
+
+import importlib
+import os
+import sys
+from typing import Any
+
+_DEFAULTS = {
+    "DATABASE_URL": "sqlite:///./ragin_dev.db",
+    "PROVIDER": "local",
+    "DEBUG": True,
+    "HOST": "127.0.0.1",
+    "PORT": 8000,
+    "APP": "main:app",
+}
+
+
+class Settings:
+    """Lazy settings container — loads the settings module on first attribute access."""
+
+    def __init__(self):
+        self._store: dict[str, Any] = {}
+        self._loaded = False
+
+    def _load(self):
+        if self._loaded:
+            return
+        self._store = dict(_DEFAULTS)
+
+        # 1. Import the settings module
+        module_name = os.environ.get("RAGIN_SETTINGS_MODULE", "settings")
+        try:
+            if "." not in sys.path and "" not in sys.path:
+                sys.path.insert(0, "")
+            mod = importlib.import_module(module_name)
+            for key in dir(mod):
+                if key.isupper():
+                    self._store[key] = getattr(mod, key)
+        except ModuleNotFoundError:
+            pass  # no settings module → use defaults + env overrides
+
+        # 2. Env vars override: RAGIN_DATABASE_URL, RAGIN_PROVIDER, etc.
+        for key in _DEFAULTS:
+            env_val = os.environ.get(f"RAGIN_{key}")
+            if env_val is not None:
+                default = _DEFAULTS[key]
+                if isinstance(default, bool):
+                    self._store[key] = env_val.lower() in ("1", "true", "yes")
+                elif isinstance(default, int):
+                    self._store[key] = int(env_val)
+                else:
+                    self._store[key] = env_val
+
+        # Legacy env var support
+        if "RAGIN_DB_URL" in os.environ and "RAGIN_DATABASE_URL" not in os.environ:
+            self._store["DATABASE_URL"] = os.environ["RAGIN_DB_URL"]
+
+        self._loaded = True
+
+    def configure(self, overrides: dict[str, Any]):
+        """Programmatic override — e.g. in tests."""
+        self._load()
+        self._store.update(overrides)
+
+    def reset(self):
+        """Reset to un-loaded state (for tests)."""
+        self._store = {}
+        self._loaded = False
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        self._load()
+        try:
+            return self._store[name]
+        except KeyError:
+            raise AttributeError(f"Setting '{name}' not configured")
+```
+
+```python
+# ragin/conf/__init__.py
+
+from ragin.conf.settings import Settings
+
+settings = Settings()
+```
+
+### Precedenza (highest wins)
+
+1. Env var `RAGIN_DATABASE_URL` ecc.
+2. `settings.py` (modulo Python)
+3. Default built-in in `_DEFAULTS`
+
+### Uso interno
+
+Tutti i componenti del framework leggono la configurazione da `settings`:
+
+```python
+from ragin.conf import settings
+
+url = settings.DATABASE_URL   # lazy loading al primo accesso
+```
+
+---
+
+## 10c. `ragin start` — Scaffold
+
+Il comando `ragin start <name>` genera un progetto completo pronto per lo sviluppo.
+
+```python
+# ragin/cli/scaffold.py
+
+SETTINGS_TEMPLATE = '''
+# (template con DATABASE_URL, PROVIDER, DEBUG, HOST, PORT)
+'''
+
+MAIN_TEMPLATE = '''
+from ragin import ServerlessApp
+from models import *  # noqa: F401, F403
+
+app = ServerlessApp()
+'''
+
+MODELS_INIT_TEMPLATE = '''
+# (docstring con esempio, import User)
+from models.user import User  # noqa: F401
+__all__ = ["User"]
+'''
+
+MODELS_USER_TEMPLATE = '''
+from ragin import Field, Model, resource
+
+@resource(operations=["crud"])
+class User(Model):
+    id: str = Field(primary_key=True)
+    name: str
+    email: str
+'''
+
+
+def scaffold_project(name: str, directory: str | None = None) -> str:
+    target = os.path.abspath(directory or name)
+
+    if os.path.exists(target) and os.listdir(target):
+        raise FileExistsError(f"Directory '{target}' already exists and is not empty.")
+
+    os.makedirs(target, exist_ok=True)
+    models_dir = os.path.join(target, "models")
+    os.makedirs(models_dir, exist_ok=True)
+
+    # Scrive: settings.py, main.py, models/__init__.py, models/user.py
+    ...
+    return target
+```
+
+### Struttura generata
+
+```
+myproject/
+├── main.py
+├── settings.py
+└── models/
+    ├── __init__.py
+    └── user.py         # modello User di esempio con @resource
+```
+
+---
+
 ## 11. `pyproject.toml`
 
 ```toml
@@ -1174,15 +1395,15 @@ name = "ragin"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic>=2.0",
+    "click>=8.3.1",
+    "pydantic>=2.12.5",
     "sqlalchemy>=2.0",
-    "click>=8.0",
-    "werkzeug>=3.0",    # dev server locale
+    "werkzeug>=3.1.7",
 ]
 
-# dipendenze opzionali per provider cloud specifici
 [project.optional-dependencies]
-aws   = ["boto3"]                          # solo se si usa BedrockProvider (V2)
+postgres = ["psycopg2-binary>=2.9"]
+aws   = ["aws-lambda-powertools>=2.0"]
 gcp   = ["functions-framework>=3.0"]
 azure = ["azure-functions>=1.0"]
 
@@ -1190,12 +1411,19 @@ azure = ["azure-functions>=1.0"]
 ragin = "ragin.cli.main:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.9.24,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
+]
 ```
 
 **Note:** `werkzeug` è una dev dependency — in Lambda non serve. Le dipendenze cloud
 (`boto3`, `azure-functions`, ecc.) sono opzionali e installate solo sul provider target.
+Il build backend è `uv_build` (non hatchling).
 
 ---
 
@@ -1220,10 +1448,10 @@ configure_backend("sqlite:///:memory:")
 app = ServerlessApp(provider=LocalProvider())
 
 @resource(operations=["crud"])
-class Player(Model):
+class User(Model):
     id: str = Field(primary_key=True)
     name: str
-    age: int
+    email: str
 
 def make_request(method, path, body=None, query=None):
     return InternalRequest(
@@ -1233,16 +1461,23 @@ def make_request(method, path, body=None, query=None):
         raw_body=json.dumps(body) if body else None,
     )
 
-def test_create_player():
-    req = make_request("POST", "/players", body={"id": str(uuid4()), "name": "Marco", "age": 22})
+def test_create_user():
+    req = make_request("POST", "/users", body={"id": str(uuid4()), "name": "Alice", "email": "alice@example.com"})
     result = app.handle(req)
     assert result["statusCode"] == 201
 
-def test_list_players():
-    req = make_request("GET", "/players")
+def test_list_users():
+    req = make_request("GET", "/users")
     result = app.handle(req)
     assert result["statusCode"] == 200
     assert isinstance(result["body"], list)
+
+def test_create_duplicate_pk():
+    uid = str(uuid4())
+    make_request("POST", "/users", body={"id": uid, "name": "A", "email": "a@a.com"})
+    req = make_request("POST", "/users", body={"id": uid, "name": "B", "email": "b@b.com"})
+    result = app.handle(req)
+    assert result["statusCode"] == 409
 ```
 
 ### Integration test — con SQLite in-memory
@@ -1261,10 +1496,10 @@ from ragin.core.registry import RouteDefinition
 def dummy_handler(req): pass
 
 def test_router_path_params():
-    routes = [RouteDefinition("GET", "/players/{id}", dummy_handler)]
+    routes = [RouteDefinition("GET", "/users/{id}", dummy_handler)]
     router = Router(routes)
     from ragin.core.requests import InternalRequest
-    req = InternalRequest(method="GET", path="/players/abc-123")
+    req = InternalRequest(method="GET", path="/users/abc-123")
     match, params = router.match(req)
     assert params["id"] == "abc-123"
 ```
@@ -1278,19 +1513,21 @@ def test_router_path_params():
 3. `core/registry.py` — `RouteDefinition` + `ResourceRegistry`
 4. `core/requests.py` / `core/responses.py` — solo strutture dati, zero cloud
 5. `core/routing.py` — `Router` con regex
-6. `resource/crud.py` — `CrudHandlerFactory`
+6. `resource/crud.py` — `CrudHandlerFactory` (con 409 Conflict handling)
 7. `resource/decorator.py` — `@resource`
 8. `runtime/base.py` — `BaseRuntimeProvider`
 9. `runtime/local.py` — `LocalProvider` (usato nei test fin da subito)
 10. `runtime/aws.py` / `gcp.py` / `azure.py`
 11. `runtime/__init__.py` — `get_default_provider()`
 12. `core/app.py` — `ServerlessApp` (ora dipende da runtime)
-13. `persistence/schema.py` + `persistence/sql.py`
-14. `persistence/__init__.py` — `get_backend()`
-15. `cli/dev_server.py`
-16. `cli/main.py` + `cli/builder.py`
-17. `pyproject.toml` + `__init__.py` exports
-18. Test suite
+13. `conf/settings.py` — Settings loader (Django-style, lazy)
+14. `persistence/schema.py` + `persistence/sql.py`
+15. `persistence/__init__.py` — `get_backend()` (usa settings.DATABASE_URL)
+16. `cli/scaffold.py` — `ragin start` (genera progetto)
+17. `cli/dev_server.py`
+18. `cli/main.py` + `cli/builder.py`
+19. `pyproject.toml` + `__init__.py` exports
+20. Test suite
 
 ---
 
