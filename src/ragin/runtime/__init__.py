@@ -7,12 +7,13 @@ from ragin.runtime.base import BaseRuntimeProvider
 
 def get_default_provider() -> BaseRuntimeProvider:
     """
-    Resolves the runtime provider from the RAGIN_PROVIDER env var.
-    Defaults to LocalProvider when the variable is absent (dev / test).
+    Resolves the runtime provider from settings.PROVIDER.
+    Defaults to LocalProvider when not configured (dev / test).
 
     Valid values: aws | gcp | azure | local
     """
-    name = os.environ.get("RAGIN_PROVIDER", "local").lower()
+    from ragin.conf import settings
+    name = settings.PROVIDER.lower()
 
     if name == "aws":
         from ragin.runtime.aws import AWSProvider

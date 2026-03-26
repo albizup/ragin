@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-aws   = []
+postgres = ["psycopg2-binary>=2.9"]
+aws   = ["aws-lambda-powertools>=2.0"]
 gcp   = ["functions-framework>=3.0"]
 azure = ["azure-functions>=1.0"]
 

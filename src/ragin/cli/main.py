@@ -12,12 +12,40 @@ def main() -> None:
 
 
 @main.command()
-@click.option("--app", "app_path", default="main:app", show_default=True,
+@click.argument("name")
+@click.option("--dir", "directory", default=None,
+              help="Target directory (defaults to ./<name>).")
+def start(name: str, directory: str | None) -> None:
+    """Scaffold a new ragin project with main.py + settings.py."""
+    from ragin.cli.scaffold import scaffold_project
+
+    try:
+        path = scaffold_project(name, directory)
+    except FileExistsError as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(f"Created ragin project '{name}' at {path}/")
+    click.echo("")
+    click.echo("  Next steps:")
+    click.echo(f"    cd {name}")
+    click.echo("    # edit settings.py  (database, provider, …)")
+    click.echo("    # edit main.py      (define your models)")
+    click.echo("    ragin dev")
+
+
+@main.command()
+@click.option("--app", "app_path", default=None,
               help="Module and app variable, e.g. main:app")
-@click.option("--host", default="127.0.0.1", show_default=True)
-@click.option("--port", default=8000, show_default=True, type=int)
-def dev(app_path: str, host: str, port: int) -> None:
+@click.option("--host", default=None, type=str)
+@click.option("--port", default=None, type=int)
+def dev(app_path: str | None, host: str | None, port: int | None) -> None:
     """Start the local development server."""
+    from ragin.conf import settings
+
+    app_path = app_path or settings.APP
+    host = host or settings.HOST
+    port = port or settings.PORT
+
     app_obj = _load_app(app_path)
     from ragin.cli.dev_server import run_dev_server
     run_dev_server(app_obj, host=host, port=port)
