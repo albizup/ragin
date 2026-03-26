@@ -32,7 +32,44 @@ PORT = 8000
 
 # ── main.py template ───────────────────────────────────────────────
 MAIN_TEMPLATE = '''\
-from ragin import ServerlessApp, Field, Model, resource
+from ragin import ServerlessApp
+
+# Import your models so @resource decorators are registered
+from models import *  # noqa: F401, F403
+
+
+app = ServerlessApp()
+'''
+
+# ── models/__init__.py template ────────────────────────────────────
+MODELS_INIT_TEMPLATE = '''\
+"""
+Define your ragin models here or in separate files inside this package.
+
+Each model decorated with @resource will auto-generate CRUD endpoints.
+
+Example — add a new model:
+
+    # models/product.py
+    from ragin import Field, Model, resource
+
+    @resource(operations=["crud"])
+    class Product(Model):
+        id: str = Field(primary_key=True)
+        name: str
+        price: float
+
+Then import it here:
+    from models.product import Product
+"""
+from models.user import User  # noqa: F401
+
+__all__ = ["User"]
+'''
+
+# ── models/user.py template ───────────────────────────────────────
+MODELS_USER_TEMPLATE = '''\
+from ragin import Field, Model, resource
 
 
 @resource(operations=["crud"])
@@ -40,17 +77,6 @@ class User(Model):
     id: str = Field(primary_key=True)
     name: str
     email: str
-
-
-# Add more models here:
-# @resource(operations=["crud"])
-# class Product(Model):
-#     id: str = Field(primary_key=True)
-#     name: str
-#     price: float
-
-
-app = ServerlessApp()
 '''
 
 
@@ -69,13 +95,25 @@ def scaffold_project(name: str, directory: str | None = None) -> str:
 
     os.makedirs(target, exist_ok=True)
 
+    # Create models/ package
+    models_dir = os.path.join(target, "models")
+    os.makedirs(models_dir, exist_ok=True)
+
     settings_path = os.path.join(target, "settings.py")
     main_path = os.path.join(target, "main.py")
+    models_init_path = os.path.join(models_dir, "__init__.py")
+    models_user_path = os.path.join(models_dir, "user.py")
 
     with open(settings_path, "w", encoding="utf-8") as f:
         f.write(SETTINGS_TEMPLATE)
 
     with open(main_path, "w", encoding="utf-8") as f:
         f.write(MAIN_TEMPLATE)
+
+    with open(models_init_path, "w", encoding="utf-8") as f:
+        f.write(MODELS_INIT_TEMPLATE)
+
+    with open(models_user_path, "w", encoding="utf-8") as f:
+        f.write(MODELS_USER_TEMPLATE)
 
     return target
