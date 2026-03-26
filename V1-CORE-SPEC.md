@@ -22,7 +22,7 @@ Cosa è incluso:
 - Selective operations (`operations=["create", "list"]`)
 
 Cosa NON è incluso in V1:
-- `@agent`, MCP server, provider LLM
+- `@agent`, MCP server, provider LLM → **Implementati in V2**
 - Deploy automatico cloud (V1 produce solo i file, il deploy è manuale)
 - Hooks before/after
 - Auth/permissions
@@ -83,6 +83,8 @@ myproject/
     ├── __init__.py      # registry dei modelli
     └── user.py          # modello User di esempio
 ```
+
+> ✅ **IMPLEMENTATO** — Struttura file completa, scaffold genera tutto correttamente.
 
 ---
 
@@ -199,6 +201,8 @@ class User(Model):
         table_name = "app_users"
 ```
 
+> ✅ **IMPLEMENTATO** — `Field()` con `json_schema_extra`, `Model` con `primary_key_field()`, `ragin_table_name()`, `Meta.table_name` override. Testato in `test_models.py`.
+
 ---
 
 ## 2. ResourceRegistry
@@ -241,6 +245,8 @@ class ResourceRegistry:
 
 registry = ResourceRegistry()   # istanza globale
 ```
+
+> ✅ **IMPLEMENTATO** — `ResourceRegistry` singleton con `_routes`, `_models`, `reset()`. Usato da tutti i decorator.
 
 ---
 
@@ -327,6 +333,8 @@ def _resource_route(method: str, model_cls: type, sub_path: str):
     return decorator
 ```
 
+> ✅ **IMPLEMENTATO** — `@resource` con operations selettive, path_prefix, custom endpoint (`@User.get`, `@User.post`, ecc.). Testato in `test_crud.py`.
+
 ---
 
 ## 4. CrudHandlerFactory
@@ -410,6 +418,8 @@ class CrudHandlerFactory:
         return handler
 ```
 
+> ✅ **IMPLEMENTATO** — 5 handler CRUD con 400 (validation), 404 (not found), 409 (duplicate PK IntegrityError). Testato in `test_crud.py`.
+
 ---
 
 ## 5. InternalRequest / InternalResponse
@@ -483,6 +493,8 @@ class InternalResponse:
     def internal_error(cls, message="Internal server error") -> "InternalResponse":
         return cls(status_code=500, body={"error": message})
 ```
+
+> ✅ **IMPLEMENTATO** — `InternalRequest` (dataclass con `json_body` property) e `InternalResponse` (factory methods: ok, created, no_content, bad_request, not_found, conflict, internal_error).
 
 ---
 
@@ -710,6 +722,8 @@ class Router:
         return None
 ```
 
+> ✅ **IMPLEMENTATO** — `Router` con regex path matching e named groups. `RouteMatch` dataclass. Testato in `test_routing.py`.
+
 ---
 
 ## 7. ServerlessApp
@@ -847,6 +861,8 @@ Per chi vuole esplicitare il provider:
 from ragin.runtime.aws import AWSProvider
 handler = app.get_handler(AWSProvider())   # sempre AWS, indipendente da env
 ```
+
+> ✅ **IMPLEMENTATO** — 4 runtime provider (AWS, GCP, Azure, Local) + `get_default_provider()` da settings. Testato via `LocalProvider` in tutti i test.
 
 ### Come `ragin build` usa questo
 
@@ -1007,6 +1023,8 @@ def _pk_column(table: sa.Table) -> sa.Column:
     raise ValueError(f"No primary key on table {table.name}")
 ```
 
+> ✅ **IMPLEMENTATO** — `SqlBackend` con SQLAlchemy Core, auto-register tabelle, schema generation da Model. SQLite + PostgreSQL supportati.
+
 ### 8.3 Configurazione backend
 
 Il backend è configurato automaticamente dal sistema `settings`. Se non configurato
@@ -1035,6 +1053,8 @@ def get_backend() -> BaseBackend:
 ```
 
 Non serve più configurare manualmente nell'app utente — `settings.py` è sufficiente.
+
+> ✅ **IMPLEMENTATO** — `configure_backend()`, `get_backend()`, `reset_backend()` con lazy init da `settings.DATABASE_URL`.
 
 ---
 
@@ -1083,6 +1103,8 @@ def run_dev_server(app, host="127.0.0.1", port=8000):
     print(f"ragin dev server — http://{host}:{port}")
     run_simple(host, port, wsgi, use_reloader=True)
 ```
+
+> ✅ **IMPLEMENTATO** — `ragin dev` con Werkzeug WSGI, opzioni --host/--port/--app.
 
 ---
 
@@ -1210,6 +1232,8 @@ def build_app(app, output_dir: str, provider: str = "aws", module: str = "main")
         print(f"  {r.method:6} {r.path}")
 ```
 
+> ✅ **IMPLEMENTATO** — CLI completa: `ragin start`, `ragin dev`, `ragin build` con Click. Builder genera entry point + routes.json.
+
 ---
 
 ## 10b. Settings (Django-style)
@@ -1322,6 +1346,8 @@ from ragin.conf import settings
 url = settings.DATABASE_URL   # lazy loading al primo accesso
 ```
 
+> ✅ **IMPLEMENTATO** — Django-style settings con lazy loading, env var override (`RAGIN_*`), `configure()`, `reset()`. Testato in `test_settings.py`.
+
 ---
 
 ## 10c. `ragin start` — Scaffold
@@ -1385,6 +1411,8 @@ myproject/
     └── user.py         # modello User di esempio con @resource
 ```
 
+> ✅ **IMPLEMENTATO** — Scaffold completo con `main.py`, `settings.py`, `models/` directory. Testato in `test_settings.py::TestScaffold`.
+
 ---
 
 ## 11. `pyproject.toml`
@@ -1424,6 +1452,8 @@ dev = [
 **Note:** `werkzeug` è una dev dependency — in Lambda non serve. Le dipendenze cloud
 (`boto3`, `azure-functions`, ecc.) sono opzionali e installate solo sul provider target.
 Il build backend è `uv_build` (non hatchling).
+
+> ✅ **IMPLEMENTATO** — `pyproject.toml` con `uv_build` backend, dipendenze core + optional (postgres, aws, gcp, azure, openai, anthropic, bedrock).
 
 ---
 
@@ -1504,6 +1534,8 @@ def test_router_path_params():
     assert params["id"] == "abc-123"
 ```
 
+> ✅ **IMPLEMENTATO** — 37 test V1 + 40 test V2 = 77 test totali, tutti verdi. Test CRUD, models, routing, settings, scaffold, agent, MCP, providers, tools, prompt.
+
 ---
 
 ## 13. Ordine di Implementazione
@@ -1529,6 +1561,8 @@ def test_router_path_params():
 19. `pyproject.toml` + `__init__.py` exports
 20. Test suite
 
+> ✅ **IMPLEMENTATO** — Tutti i 20 step completati.
+
 ---
 
 ## 14. Dipendenze Esterne
@@ -1544,3 +1578,5 @@ def test_router_path_params():
 
 Il **runtime Lambda** installerà solo `pydantic` + `sqlalchemy`.
 Nessuna dipendenza cloud nel core — i provider cloud sono import opzionali.
+
+> ✅ **IMPLEMENTATO** — Tutte le dipendenze esterne installate e verificate.

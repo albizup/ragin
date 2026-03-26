@@ -24,7 +24,7 @@ Cosa NON è incluso in V2:
 - Provider LangChain, PydanticAI (V3)
 - Conversation history persistente DynamoDB (V3)
 - Hooks before/after (V3)
-- Multi-model agent (V3)
+- Multi-model agent (V3) → **nota: il decorator `@agent` supporta già `model=[A, B]`**
 - Streaming LLM response (V3)
 - Auth/permissions (V3)
 
@@ -47,7 +47,7 @@ ragin/
     __init__.py
     server.py              # MCP Lambda handler (Streamable HTTP)
     tools.py               # generazione tool JSON schema da modelli
-    transport.py           # Streamable HTTP transport layer
+    transport.py           # Streamable HTTP transport layer  ⚠️ NON IMPLEMENTATO (non necessario)
 
   providers/
     __init__.py            # export provider classes
@@ -66,6 +66,8 @@ openai    = ["openai>=1.0"]
 anthropic = ["anthropic>=0.30"]
 bedrock   = ["boto3>=1.34"]
 ```
+
+> ✅ **IMPLEMENTATO** — Struttura file creata (agent/, mcp/, providers/). Manca solo `mcp/transport.py` (non necessario: il transport è gestito dal Lambda handler direttamente). Dipendenze opzionali aggiunte a `pyproject.toml`.
 
 ---
 
@@ -179,6 +181,8 @@ Genera automaticamente:
 - 5 tool MCP: `create_user`, `list_users`, `get_user`, `update_user`, `delete_user`
 - System prompt con schema User e descrizione
 
+> ✅ **IMPLEMENTATO** — `@agent` decorator registra endpoint `POST /<resource>/agent`, genera tool CRUD, system prompt, supporta `model` singolo o lista. Custom tools via `@MyAgent.tool`. Testato in `test_agent_decorator.py`.
+
 ---
 
 ## 2. System Prompt Auto-Generation
@@ -248,6 +252,8 @@ Fields:
 Use the available tools to perform operations on these models.
 Always confirm actions with a clear response to the user.
 ```
+
+> ✅ **IMPLEMENTATO** — `generate_system_prompt()` genera prompt con nomi modelli, tabelle, campi, tipi, primary key, field descriptions. Testato in `test_agent_prompt.py`.
 
 ---
 
@@ -439,6 +445,8 @@ Il tool `create_user` genera:
 }
 ```
 
+> ✅ **IMPLEMENTATO** — `build_crud_tools()` genera 5 tool con JSON schema, `_make_crud_caller()` dispatch interno via Router. Nota: il POST (create) include correttamente l'`id` nel body (bug fix applicato). Testato in `test_agent_tools.py`.
+
 ---
 
 ## 4. AgentRunner — Loop LLM + Tool Calls
@@ -601,6 +609,8 @@ AgentRunner.run("Crea un utente Alice...")
          {"message": "Ho creato l'utente Alice...", "tool_calls": [...]}
 ```
 
+> ✅ **IMPLEMENTATO** — `AgentRunner` con loop LLM + tool calls, MAX_ITERATIONS=10, `register_custom_tool()`, schema tool in formato OpenAI function-calling. Testato in `test_agent_runner.py`.
+
 ---
 
 ## 5. BaseProvider — Interfaccia LLM
@@ -666,6 +676,8 @@ class BaseProvider(ABC):
         """
         ...
 ```
+
+> ✅ **IMPLEMENTATO** — `BaseProvider` ABC con `complete()`, `ToolCall` dataclass con `to_dict()`, `AgentResponse` con content/tool_calls. Testato in `test_providers.py`.
 
 ---
 
@@ -936,6 +948,8 @@ def __getattr__(name):
     raise AttributeError(f"module 'ragin.providers' has no attribute {name}")
 ```
 
+> ✅ **IMPLEMENTATO** — `OpenAIProvider`, `AnthropicProvider`, `BedrockProvider` (Converse API) tutti implementati con lazy client init. `__init__.py` con lazy imports via `__getattr__`. Testato in `test_providers.py` (import lazy verificato).
+
 ---
 
 ## 7. MCP Server Lambda
@@ -1072,6 +1086,8 @@ def lambda_handler(event, context):
 }
 ```
 
+> ✅ **IMPLEMENTATO** — `MCPServer` con JSON-RPC handler (initialize, tools/list, tools/call), `tool_to_mcp_schema()`, `build_mcp_tool_list()`. Entry point Lambda generato da `ragin build`. Testato in `test_mcp.py`. **Nota:** `mcp/transport.py` (Streamable HTTP transport) non implementato separatamente — il transport è gestito direttamente dal Lambda entry handler.
+
 ---
 
 ## 8. Aggiornamenti al Registry
@@ -1098,6 +1114,8 @@ class ResourceRegistry:
     def get_agents(self) -> dict[str, AgentDefinition]:
         return dict(self._agents)
 ```
+
+> ⚠️ **PARZIALMENTE IMPLEMENTATO** — Gli agent sono registrati come `RouteDefinition(operation="agent")` nel registry esistente, senza un `AgentDefinition` separato. Funzionalmente equivalente: le route agent vengono distinte dal campo `operation`. Il `_agents` dict separato non è stato aggiunto.
 
 ---
 
@@ -1180,6 +1198,8 @@ def lambda_handler(event, context):
 }
 ```
 
+> ✅ **IMPLEMENTATO** — `ragin build` genera `_ragin_entry.py` (CRUD) + `_ragin_mcp_entry.py` (MCP, se ci sono agent). `routes.json` aggiornato con struttura `lambdas.crud / lambdas.agent / lambdas.mcp`. **Nota:** non viene generato un `_ragin_agent_entry.py` separato — gli endpoint agent sono serviti dalla stessa Lambda CRUD tramite routing interno.
+
 ---
 
 ## 10. Export
@@ -1195,6 +1215,8 @@ from ragin.agent.decorator import agent          # NEW V2
 
 __all__ = ["ServerlessApp", "Field", "Model", "resource", "agent"]
 ```
+
+> ✅ **IMPLEMENTATO** — `ragin/__init__.py` esporta `agent` accanto a `ServerlessApp`, `Field`, `Model`, `resource`.
 
 ---
 
@@ -1396,6 +1418,8 @@ def test_system_prompt_contains_model_info():
     assert "Manages users." in prompt
 ```
 
+> ✅ **IMPLEMENTATO** — 77 test totali (37 V1 + 40 V2), tutti verdi. Test coprono: agent decorator, runner, tools, prompt, MCP server, providers base, lazy imports. MockProvider usato per test senza chiamate API reali.
+
 ---
 
 ## 12. Ordine di Implementazione
@@ -1416,6 +1440,8 @@ def test_system_prompt_contains_model_info():
 14. `__init__.py` — export `agent`
 15. Test suite (con MockProvider)
 
+> ✅ **IMPLEMENTATO** — Tutti i 15 step completati.
+
 ---
 
 ## 13. Dipendenze V2
@@ -1428,6 +1454,8 @@ def test_system_prompt_contains_model_info():
 
 Nessuna nuova dipendenza **core** — i provider LLM sono tutti opzionali.
 Il codice agent/mcp dipende solo dai moduli ragin V1.
+
+> ✅ **IMPLEMENTATO** — Nessuna nuova dipendenza core. Provider LLM tutti opzionali.
 
 ---
 
