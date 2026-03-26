@@ -1,0 +1,36 @@
+[project]
+name = "ragin"
+version = "0.1.0"
+description = "Model-First Serverless Framework with AI Agents"
+readme = "README.md"
+authors = [
+    { name = "albizup", email = "alberto.riccardi13@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.3.1",
+    "pydantic>=2.12.5",
+    "sqlalchemy>=2.0",
+    "werkzeug>=3.1.7",
+]
+
+[project.optional-dependencies]
+aws   = []
+gcp   = ["functions-framework>=3.0"]
+azure = ["azure-functions>=1.0"]
+
+[project.scripts]
+ragin = "ragin.cli.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.9.24,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
+]
