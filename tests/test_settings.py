@@ -71,7 +71,7 @@ class TestScaffold:
         assert os.path.isfile(os.path.join(path, "main.py"))
         assert os.path.isfile(os.path.join(path, "settings.py"))
         assert os.path.isfile(os.path.join(path, "models", "__init__.py"))
-        assert os.path.isfile(os.path.join(path, "models", "user.py"))
+        assert not os.path.isfile(os.path.join(path, "models", "user.py"))
 
     def test_main_py_content(self, tmp_path):
         target = str(tmp_path / "demo")
@@ -80,18 +80,12 @@ class TestScaffold:
         assert "ServerlessApp" in content
         assert "from models import" in content
 
-    def test_models_user_content(self, tmp_path):
-        target = str(tmp_path / "demo")
-        scaffold_project("demo", directory=target)
-        content = open(os.path.join(target, "models", "user.py")).read()
-        assert "@resource" in content
-        assert "class User(Model)" in content
-
     def test_models_init_content(self, tmp_path):
         target = str(tmp_path / "demo")
         scaffold_project("demo", directory=target)
         content = open(os.path.join(target, "models", "__init__.py")).read()
-        assert "from models.user import User" in content
+        assert "@resource" in content
+        assert "class Product(Model)" in content
 
     def test_settings_py_content(self, tmp_path):
         target = str(tmp_path / "demo")

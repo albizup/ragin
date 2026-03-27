@@ -73,8 +73,7 @@ myproject/
 ├── main.py              # App entry point
 ├── settings.py          # Database, provider, server config
 └── models/
-    ├── __init__.py      # Model registry
-    └── user.py          # Example User model
+    └── __init__.py      # Create your models here
 ```
 
 ### 3. Run locally
@@ -389,8 +388,7 @@ myproject/
 ├── main.py              # ServerlessApp + imports
 ├── settings.py          # Configuration
 └── models/
-    ├── __init__.py      # from models.user import User, etc.
-    ├── user.py
+    ├── __init__.py      # from models.product import Product, etc.
     └── product.py       # Add models as you go
 ```
 
