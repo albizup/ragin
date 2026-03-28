@@ -12,6 +12,8 @@ from ragin.providers.base import BaseProvider
 
 
 def agent(
+    _cls: type | None = None,
+    *,
     model: type | list[type] | None = None,
     provider: BaseProvider | None = None,
     description: str = "",
@@ -21,28 +23,49 @@ def agent(
     """
     Class decorator that wires an AI agent to registered @resource models.
 
-    Usage:
-        @agent(model=User, provider=OpenAIProvider(model="gpt-4o"),
-               description="Manages user records.")
-        class UserAgent:
-            pass
+    Supports multiple usage patterns:
+
+        # Stack directly on @resource (model is the decorated class):
+        @agent
+        @resource(operations=["crud"])
+        class User(Model): ...
+
+        # Stack with explicit config:
+        @agent(provider=OpenAIProvider(model="gpt-4o"), description="Manages users.")
+        @resource(operations=["crud"])
+        class User(Model): ...
+
+        # Separate agent class (legacy):
+        @agent(model=User, provider=OpenAIProvider(model="gpt-4o"))
+        class UserAgent: ...
     """
 
     def decorator(cls: type) -> type:
-        models = [model] if not isinstance(model, list) else model  # type: ignore[arg-type]
+        # Determine models
+        if model is not None:
+            models = [model] if not isinstance(model, list) else model
+        elif hasattr(cls, "_ragin_resource_name"):
+            models = [cls]
+        else:
+            raise ValueError(
+                "@agent: no model specified and class is not a @resource. "
+                "Either stack @agent on a @resource class or pass model=..."
+            )
+
         tool_defs = _resolve_tools(models, tools or ["crud"])
         system_prompt = generate_system_prompt(models, description)
 
         runner = AgentRunner(
-            provider=provider,  # type: ignore[arg-type]
+            provider=provider,
             system_prompt=system_prompt,
             tools=tool_defs,
         )
 
         # Register POST /<resource>/agent for each model
         for m in models:
-            resource_name = m.__name__.lower() + "s"
-            path = f"/{resource_name}/agent"
+            resource_name = getattr(m, "_ragin_resource_name", m.ragin_endpoint_name())
+            base_path = getattr(m, "_ragin_base_path", f"/{resource_name}")
+            path = f"{base_path}/agent"
 
             def _make_handler(_runner: AgentRunner = runner) -> Callable:
                 def handler(request: Any) -> InternalResponse:
@@ -62,19 +85,26 @@ def agent(
                 operation="agent",
             ))
 
+        # Register tools in global registry so MCP sees the same catalogue
+        registry.register_tools(tool_defs)
+
         # Expose runner on the class for custom tool registration
         cls._ragin_runner = runner  # type: ignore[attr-defined]
 
         @classmethod  # type: ignore[misc]
         def tool_decorator(klass: type, fn: Callable) -> Callable:  # noqa: N805
-            """Register a custom tool: @UserAgent.tool"""
-            runner.register_custom_tool(fn)
+            """Register a custom tool: @UserAgent.tool or @User.tool"""
+            td = runner.register_custom_tool(fn)
+            registry.register_tools([td])
             return fn
 
         cls.tool = tool_decorator  # type: ignore[attr-defined]
 
         return cls
 
+    # Support bare @agent (without parentheses)
+    if _cls is not None:
+        return decorator(_cls)
     return decorator
 
 

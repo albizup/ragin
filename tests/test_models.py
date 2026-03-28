@@ -38,6 +38,18 @@ def test_table_name_default():
     assert User.ragin_table_name() == "users"
 
 
+def test_endpoint_name_default():
+    assert User.ragin_endpoint_name() == "users"
+
+
+def test_endpoint_name_custom():
+    class Bar(Model):
+        id: str = Field(primary_key=True)
+        class Meta:
+            endpoint_name = "bar_customs"
+    assert Bar.ragin_endpoint_name() == "bar_customs"
+
+
 def test_table_name_custom():
     class Foo(Model):
         id: str = Field(primary_key=True)

@@ -16,9 +16,10 @@ class CrudHandlerFactory:
     They import the backend lazily so it can be configured after module load.
     """
 
-    def __init__(self, model_cls: type[Model], resource_name: str) -> None:
+    def __init__(self, model_cls: type[Model], resource_name: str, pk_field: str | None = None) -> None:
         self.model_cls = model_cls
         self.resource_name = resource_name
+        self.pk_field = pk_field or model_cls.primary_key_field()
 
     def create_handler(self) -> Callable:
         model_cls = self.model_cls
@@ -65,11 +66,12 @@ class CrudHandlerFactory:
 
     def retrieve_handler(self) -> Callable:
         model_cls = self.model_cls
+        pk_field = self.pk_field
 
         def handler(request: InternalRequest) -> InternalResponse:
             from ragin.persistence import get_backend
 
-            pk = request.path_params.get("id")
+            pk = request.path_params.get(pk_field)
             record = get_backend().get(model_cls, pk)
             if record is None:
                 return InternalResponse.not_found()
@@ -80,11 +82,28 @@ class CrudHandlerFactory:
 
     def update_handler(self) -> Callable:
         model_cls = self.model_cls
+        pk_field = self.pk_field
 
         def handler(request: InternalRequest) -> InternalResponse:
             from ragin.persistence import get_backend
+            from pydantic import ValidationError
 
-            pk = request.path_params.get("id")
+            pk = request.path_params.get(pk_field)
+
+            # Fetch current record to merge with incoming data
+            current = get_backend().get(model_cls, pk)
+            if current is None:
+                return InternalResponse.not_found()
+
+            # Merge stored record + incoming partial payload
+            merged = {**current, **request.json_body}
+
+            # Validate the full merged record against the model contract
+            try:
+                model_cls.model_validate(merged)
+            except ValidationError as exc:
+                return InternalResponse.bad_request(exc.errors())
+
             record = get_backend().update(model_cls, pk, request.json_body)
             if record is None:
                 return InternalResponse.not_found()
@@ -95,11 +114,12 @@ class CrudHandlerFactory:
 
     def delete_handler(self) -> Callable:
         model_cls = self.model_cls
+        pk_field = self.pk_field
 
         def handler(request: InternalRequest) -> InternalResponse:
             from ragin.persistence import get_backend
 
-            pk = request.path_params.get("id")
+            pk = request.path_params.get(pk_field)
             deleted = get_backend().delete(model_cls, pk)
             if not deleted:
                 return InternalResponse.not_found()

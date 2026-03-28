@@ -103,3 +103,40 @@ class TestBuildCrudTools:
         result = delete.handler({"id": "t5"})
         # delete returns None (204 no-content body)
         assert result is None
+
+
+class TestNonIdPrimaryKey:
+    """Verify tools work correctly when the PK field is not called 'id'."""
+
+    def _make_player_model(self):
+        @resource(operations=["crud"])
+        class Player(Model):
+            player_id: str = Field(primary_key=True)
+            nickname: str
+        return Player
+
+    def test_tool_schema_uses_real_pk(self):
+        cls = self._make_player_model()
+        tools = build_crud_tools(cls)
+        get_tool = next(t for t in tools if t.name == "get_player")
+        assert "player_id" in get_tool.parameters["required"]
+        assert "player_id" in get_tool.parameters["properties"]
+
+    def test_crud_via_tools_with_non_id_pk(self):
+        cls = self._make_player_model()
+        tools = build_crud_tools(cls)
+        create = next(t for t in tools if t.name == "create_player")
+        result = create.handler({"player_id": "p1", "nickname": "Ace"})
+        assert result["player_id"] == "p1"
+
+        get_tool = next(t for t in tools if t.name == "get_player")
+        result = get_tool.handler({"player_id": "p1"})
+        assert result["nickname"] == "Ace"
+
+        update = next(t for t in tools if t.name == "update_player")
+        result = update.handler({"player_id": "p1", "nickname": "Ace2"})
+        assert result["nickname"] == "Ace2"
+
+        delete = next(t for t in tools if t.name == "delete_player")
+        result = delete.handler({"player_id": "p1"})
+        assert result is None

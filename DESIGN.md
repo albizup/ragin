@@ -53,6 +53,10 @@ from ragin.providers import OpenAIProvider
 app = ServerlessApp()
 
 
+@agent(
+    provider=OpenAIProvider(model="gpt-4o"),
+    description="Manages user records. Can create, list, retrieve, update and delete users.",
+)
 @resource(operations=["crud"])
 class User(Model):
     id: str = Field(primary_key=True)
@@ -60,15 +64,6 @@ class User(Model):
     email: str
     bio: str = Field(embedding=True)   # V3: auto-embedding per semantic search
     role: str = "member"
-
-
-@agent(
-    model=User,
-    provider=OpenAIProvider(model="gpt-4o"),
-    description="Manages user records. Can create, list, retrieve, update and delete users.",
-)
-class UserAgent:
-    pass
 ```
 
 Quello che viene generato automaticamente:
@@ -94,10 +89,10 @@ Client
   │
   ▼
 API Gateway
-  ├── /users          →  CRUD Lambda
-  ├── /users/{id}     →  CRUD Lambda
-  ├── /users/agent    →  Agent Lambda  (CRUD tools + semantic tools)
-  ├── /users/search   →  Semantic Search Lambda  (V3)
+  ├── /users           →  CRUD Lambda
+  ├── /users/{id}      →  CRUD Lambda
+  ├── /users/agent     →  Agent Lambda  (CRUD tools + semantic tools)
+  ├── /users/search    →  Semantic Search Lambda  (V3)
   └── /mcp            →  MCP Lambda
 ```
 
@@ -190,6 +185,24 @@ class User(Model):
     role: str = "member"
 ```
 
+### Naming
+
+Di default, sia il nome tabella che il nome endpoint usano la **pluralizzazione smart**
+del nome classe in lowercase (es. `User` → `users`, `Category` → `categories`).
+Customizzabili via inner class `Meta`:
+
+```python
+class User(Model):
+    class Meta:
+        table_name = "app_users"      # DB table (default: "users")
+        endpoint_name = "people"       # REST path (default: "users")
+
+    id: str = Field(primary_key=True)
+    name: str
+```
+
+Metodi: `Model.ragin_table_name()`, `Model.ragin_endpoint_name()`.
+
 ### Field Options
 
 ```python
@@ -212,7 +225,7 @@ Field(
 
 ```python
 @resource(
-    name="users",                                              # default: plurale del nome classe
+    name="users",                                              # default: _pluralize(cls.__name__.lower())
     operations=["create", "list", "retrieve", "update", "delete"],  # oppure: ["crud"]
     path_prefix="/v1",                                         # opzionale
 )
@@ -222,13 +235,16 @@ class User(Model):
 
 ### Operazioni generate
 
-| Operation  | Method | Path            |
-|------------|--------|-----------------|
-| `create`   | POST   | `/users`        |
-| `list`     | GET    | `/users`        |
-| `retrieve` | GET    | `/users/{id}`   |
-| `update`   | PATCH  | `/users/{id}`   |
-| `delete`   | DELETE | `/users/{id}`   |
+| Operation  | Method | Path              |
+|------------|--------|-------------------|
+| `create`   | POST   | `/users`          |
+| `list`     | GET    | `/users`          |
+| `retrieve` | GET    | `/users/{id}`     |
+| `update`   | PATCH  | `/users/{id}`     |
+| `delete`   | DELETE | `/users/{id}`     |
+
+Il path parameter per retrieve/update/delete usa il nome del campo primary key.
+Se il PK si chiama `player_id`, il path sarà `/players/{player_id}`.
 
 ### Error Handling
 
@@ -270,6 +286,12 @@ def validate_email(data: User) -> User:
 ### Decorator
 
 ```python
+# Stacking diretto su @resource (consigliato):
+@agent(provider=OpenAIProvider(...), description="...")
+@resource(operations=["crud"])
+class User(Model): ...
+
+# Oppure, con classe agente separata (legacy):
 @agent(
     model=User,                          # modello di riferimento (o lista di modelli)
     provider=OpenAIProvider(...),        # LLM provider
@@ -285,6 +307,7 @@ L'agente genera automaticamente:
 - **system prompt** dal nome del modello, campi, descrizioni dei Field e `description`
 - **tool schema** MCP per ogni operazione abilitata
 - **endpoint** `POST /users/agent`
+- **registrazione tool** nel registro globale (`ResourceRegistry._tools`)
 
 ### Request/Response
 
@@ -313,7 +336,7 @@ def users_by_role(role: str, limit: int = 10) -> list[dict]:
     ...
 ```
 
-Il tool viene aggiunto automaticamente al MCP server e reso disponibile all'agente.
+Il tool viene aggiunto automaticamente al registro globale, condiviso con il MCP server.
 
 ---
 
@@ -378,7 +401,7 @@ Per ogni modello registrato con `@resource`, il MCP server espone:
 
 ```
 create_player(name: str, age: int, team: str) → Player
-list_players(filters: dict, limit: int, offset: int) → list[Player]
+list_player(filters: dict, limit: int, offset: int) → list[Player]
 get_player(id: UUID) → Player
 update_player(id: UUID, data: dict) → Player
 delete_player(id: UUID) → bool
@@ -391,7 +414,7 @@ per la validazione CRUD).
 
 ```
 Agent Lambda
-  │  HTTP POST /mcp/tools/call  {"name": "list_players", "arguments": {...}}
+  │  HTTP POST /mcp/tools/call  {"name": "list_player", "arguments": {...}}
   ▼
 MCP Lambda
   │  Risolve il tool → chiama CRUD Lambda internamente (invoke diretto o HTTP)
@@ -451,7 +474,7 @@ build/
 {
   "lambdas": {
     "crud":  { "handler": "main.lambda_handler", "routes": [...] },
-    "agent": { "handler": "main.agent_handler",  "routes": [{"method": "POST", "path": "/players/agent"}] },
+    "agent": { "handler": "main.agent_handler",  "routes": [{"method": "POST", "path": "/player/agent"}] },
     "mcp":   { "handler": "main.mcp_handler",    "routes": [{"method": "POST", "path": "/mcp"}] }
   }
 }

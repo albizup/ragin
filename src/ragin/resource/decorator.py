@@ -35,12 +35,13 @@ def resource(
     """
 
     def decorator(model_cls):
-        resource_name = name or (model_cls.__name__.lower() + "s")
+        resource_name = name or model_cls.ragin_endpoint_name()
+        pk_field = model_cls.primary_key_field()
         ops = _parse_operations(operations or ["crud"])
         base_path = f"{path_prefix}/{resource_name}"
-        pk_path = f"{base_path}/{{id}}"
+        pk_path = f"{base_path}/{{{pk_field}}}"
 
-        factory = CrudHandlerFactory(model_cls, resource_name)
+        factory = CrudHandlerFactory(model_cls, resource_name, pk_field)
 
         op_handlers: dict[str, Callable] = {
             "create":   factory.create_handler(),
@@ -63,10 +64,12 @@ def resource(
                 operation=op,
             ))
 
-        # Attach helpers for resource-scoped custom endpoints:
-        # @User.get("/{id}/profile")
+        # Attach canonical metadata used by @agent and other layers
         model_cls._ragin_resource_name = resource_name
         model_cls._ragin_base_path = base_path
+        model_cls._ragin_pk_field = pk_field
+
+        # Resource-scoped custom endpoints: @User.get("/{id}/profile")
         model_cls.get    = classmethod(lambda cls, p: _resource_route("GET",    cls, p))
         model_cls.post   = classmethod(lambda cls, p: _resource_route("POST",   cls, p))
         model_cls.patch  = classmethod(lambda cls, p: _resource_route("PATCH",  cls, p))

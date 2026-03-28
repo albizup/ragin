@@ -909,7 +909,7 @@ def build_semantic_tools(model_cls: type) -> list[ToolDefinition]:
     if not has_embeddings(model_cls):
         return []
 
-    resource_name = model_cls.__name__.lower() + "s"
+    resource_name = getattr(model_cls, "_ragin_resource_name", None) or model_cls.ragin_endpoint_name()
     singular = model_cls.__name__.lower()
 
     return [ToolDefinition(
@@ -1146,7 +1146,7 @@ Conversazione esempio:
 User: "Find someone who knows machine learning and assign them to the NLP task"
 
 Agent:
-  1. semantic_search_users(query="machine learning expertise")
+  1. semantic_search_user(query="machine learning expertise")
      → [{"id": "u3", "name": "Alice", "skills": "ML, Python, NLP", "_score": 0.94}]
   2. semantic_search_tasks(query="NLP task")
      → [{"id": "t7", "title": "Build NLP pipeline", "_score": 0.91}]
@@ -1226,7 +1226,7 @@ API Gateway → Lambda
   │
   ├── 1. Carica contesto (tools, system prompt)
   ├── 2. Chiama LLM con il messaggio
-  ├── 3. LLM ritorna tool_call (es. semantic_search_users)
+  ├── 3. LLM ritorna tool_call (es. semantic_search_user)
   ├── 4. Esegue tool localmente:
   │      ├── genera embedding della query (OpenAI API call ~50ms)
   │      └── cerca nel vector store (pgvector query ~10ms)
@@ -1468,7 +1468,7 @@ def test_semantic_tools_generated():
 
     tools = build_semantic_tools(User)
     assert len(tools) == 1
-    assert tools[0].name == "semantic_search_users"
+    assert tools[0].name == "semantic_search_user"
     assert "query" in tools[0].parameters["properties"]
 
 
@@ -1512,7 +1512,7 @@ def test_agent_has_semantic_tools():
     class UserAgent:
         pass
 
-    # L'agent runner deve avere il tool semantic_search_users
+    # L'agent runner deve avere il tool semantic_search_user
     tool_names = list(UserAgent._runner.tools.keys())
     assert "semantic_search_users" in tool_names
     assert "create_user" in tool_names

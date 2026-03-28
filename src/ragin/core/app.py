@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic import ValidationError
@@ -9,6 +10,8 @@ from ragin.core.requests import InternalRequest
 from ragin.core.responses import InternalResponse
 from ragin.core.routing import Router
 from ragin.runtime.base import BaseRuntimeProvider
+
+logger = logging.getLogger("ragin")
 
 
 class ServerlessApp:
@@ -80,6 +83,7 @@ class ServerlessApp:
         except ValidationError as exc:
             response = InternalResponse.bad_request(exc.errors())
         except Exception:
+            logger.exception("Unhandled error in %s %s", request.method, request.path)
             response = InternalResponse.internal_error()
 
         return p.format_response(response)

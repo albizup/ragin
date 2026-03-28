@@ -112,3 +112,49 @@ class TestAgentDecorator:
         req = _make_request("/notes/agent", {"message": "hi", "thread_id": "abc"})
         result = app.handle(req)
         assert result["body"]["thread_id"] == "abc"
+
+    def test_bare_agent_on_resource(self):
+        """@agent stacked directly on @resource (no separate Agent class)."""
+        mock = MockProvider([AgentResponse(content="I'm the bare agent!")])
+
+        @agent(provider=mock)
+        @resource(operations=["crud"])
+        class Widget(Model):
+            id: str = Field(primary_key=True)
+            color: str
+
+        app = ServerlessApp()
+        req = _make_request("/widgets/agent", {"message": "hi"})
+        result = app.handle(req)
+        assert result["statusCode"] == 200
+        assert result["body"]["message"] == "I'm the bare agent!"
+
+    def test_agent_custom_resource_name(self):
+        """@agent uses the canonical resource name from @resource(name=...)."""
+        mock = MockProvider([AgentResponse(content="ok")])
+
+        @agent(provider=mock)
+        @resource(name="people", operations=["crud"])
+        class Person(Model):
+            id: str = Field(primary_key=True)
+            full_name: str
+
+        app = ServerlessApp()
+        req = _make_request("/people/agent", {"message": "hi"})
+        result = app.handle(req)
+        assert result["statusCode"] == 200
+
+    def test_agent_with_path_prefix(self):
+        """@agent uses the canonical path from @resource(path_prefix=...)."""
+        mock = MockProvider([AgentResponse(content="ok")])
+
+        @agent(provider=mock)
+        @resource(path_prefix="/v1", operations=["crud"])
+        class Gizmo(Model):
+            id: str = Field(primary_key=True)
+            label: str
+
+        app = ServerlessApp()
+        req = _make_request("/v1/gizmos/agent", {"message": "hi"})
+        result = app.handle(req)
+        assert result["statusCode"] == 200

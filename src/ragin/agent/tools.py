@@ -37,7 +37,7 @@ def build_crud_tools(
     If operations is None all five are generated.
     """
     ops = operations or ["create", "list", "retrieve", "update", "delete"]
-    resource_name = model_cls.__name__.lower() + "s"
+    resource_name = getattr(model_cls, "_ragin_resource_name", None) or model_cls.ragin_endpoint_name()
     singular = model_cls.__name__.lower()
     pk_field = model_cls.primary_key_field()
     tools: list[ToolDefinition] = []
@@ -59,7 +59,7 @@ def build_crud_tools(
                 "properties": dict(props),
                 "required": list(required),
             },
-            handler=_make_crud_caller("POST", f"/{resource_name}"),
+            handler=_make_crud_caller("POST", f"/{resource_name}", pk_field),
             model=model_cls,
         ))
 
@@ -72,7 +72,7 @@ def build_crud_tools(
             name=f"list_{resource_name}",
             description=f"List {resource_name}. Supports filter parameters.",
             parameters={"type": "object", "properties": filter_props},
-            handler=_make_crud_caller("GET", f"/{resource_name}"),
+            handler=_make_crud_caller("GET", f"/{resource_name}", pk_field),
             model=model_cls,
         ))
 
@@ -85,7 +85,7 @@ def build_crud_tools(
                 "properties": {pk_field: {"type": "string"}},
                 "required": [pk_field],
             },
-            handler=_make_crud_caller("GET", f"/{resource_name}/{{id}}"),
+            handler=_make_crud_caller("GET", f"/{resource_name}/{{{pk_field}}}", pk_field),
             model=model_cls,
         ))
 
@@ -100,7 +100,7 @@ def build_crud_tools(
                 "properties": update_props,
                 "required": [pk_field],
             },
-            handler=_make_crud_caller("PATCH", f"/{resource_name}/{{id}}"),
+            handler=_make_crud_caller("PATCH", f"/{resource_name}/{{{pk_field}}}", pk_field),
             model=model_cls,
         ))
 
@@ -113,7 +113,7 @@ def build_crud_tools(
                 "properties": {pk_field: {"type": "string"}},
                 "required": [pk_field],
             },
-            handler=_make_crud_caller("DELETE", f"/{resource_name}/{{id}}"),
+            handler=_make_crud_caller("DELETE", f"/{resource_name}/{{{pk_field}}}", pk_field),
             model=model_cls,
         ))
 
@@ -135,7 +135,7 @@ def _field_json_schema(field_info: Any) -> dict:
     return schema
 
 
-def _make_crud_caller(method: str, path_template: str) -> Callable[[dict], Any]:
+def _make_crud_caller(method: str, path_template: str, pk_field: str = "id") -> Callable[[dict], Any]:
     """
     Create a tool handler that builds an InternalRequest and dispatches it
     through the router — the tool calls the same internal CRUD handlers.
@@ -146,13 +146,14 @@ def _make_crud_caller(method: str, path_template: str) -> Callable[[dict], Any]:
         from ragin.core.requests import InternalRequest
         from ragin.core.routing import Router
 
-        pk_value = arguments.get("id")
+        pk_value = arguments.get(pk_field)
         path = path_template
-        if "{id}" in path and pk_value is not None:
-            path = path.replace("{id}", str(pk_value))
+        pk_placeholder = f"{{{pk_field}}}"
+        if pk_placeholder in path and pk_value is not None:
+            path = path.replace(pk_placeholder, str(pk_value))
 
         if method == "GET":
-            query = {k: str(v) for k, v in arguments.items() if k != "id"}
+            query = {k: str(v) for k, v in arguments.items() if k != pk_field}
             body = None
         elif method == "DELETE":
             query = {}
@@ -161,9 +162,9 @@ def _make_crud_caller(method: str, path_template: str) -> Callable[[dict], Any]:
             query = {}
             body = dict(arguments)
         else:
-            # PATCH / PUT — id goes into path, not body
+            # PATCH / PUT — pk goes into path, not body
             query = {}
-            body = {k: v for k, v in arguments.items() if k != "id"}
+            body = {k: v for k, v in arguments.items() if k != pk_field}
 
         request = InternalRequest(
             method=method,

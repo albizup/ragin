@@ -185,8 +185,19 @@ class Model(PydanticBaseModel):
 
     @classmethod
     def ragin_table_name(cls) -> str:
-        """Ritorna il nome della tabella (default: snake_case plurale)."""
-        return cls.__name__.lower() + "s"
+        """Ritorna il nome della tabella (default: pluralizzazione smart del nome classe)."""
+        meta = getattr(cls, "Meta", None)
+        if meta and hasattr(meta, "table_name"):
+            return meta.table_name
+        return _pluralize(cls.__name__.lower())
+
+    @classmethod
+    def ragin_endpoint_name(cls) -> str:
+        """Ritorna il nome dell'endpoint REST (default: pluralizzazione smart del nome classe)."""
+        meta = getattr(cls, "Meta", None)
+        if meta and hasattr(meta, "endpoint_name"):
+            return meta.endpoint_name
+        return _pluralize(cls.__name__.lower())
 
     class Config:
         # permette UUID, datetime ecc. come input string
@@ -201,7 +212,7 @@ class User(Model):
         table_name = "app_users"
 ```
 
-> ✅ **IMPLEMENTATO** — `Field()` con `json_schema_extra`, `Model` con `primary_key_field()`, `ragin_table_name()`, `Meta.table_name` override. Testato in `test_models.py`.
+> ✅ **IMPLEMENTATO** — `Field()` con `json_schema_extra`, `Model` con `primary_key_field()`, `ragin_table_name()`, `ragin_endpoint_name()`, `Meta.table_name`/`Meta.endpoint_name` override. Testato in `test_models.py`.
 
 ---
 
@@ -246,7 +257,7 @@ class ResourceRegistry:
 registry = ResourceRegistry()   # istanza globale
 ```
 
-> ✅ **IMPLEMENTATO** — `ResourceRegistry` singleton con `_routes`, `_models`, `reset()`. Usato da tutti i decorator.
+> ✅ **IMPLEMENTATO** — `ResourceRegistry` singleton con `_routes`, `_models`, `_tools`, `reset()`. Usato da tutti i decorator. `register_tools()`/`get_all_tools()` per registro globale dei tool.
 
 ---
 
@@ -271,12 +282,13 @@ def resource(
     path_prefix: str = "",
 ):
     def decorator(model_cls):
-        resource_name = name or (model_cls.__name__.lower() + "s")
+        resource_name = name or model_cls.ragin_endpoint_name()
+        pk_field = model_cls.primary_key_field()
         ops = _parse_operations(operations or ["crud"])
         base_path = f"{path_prefix}/{resource_name}"
-        pk_path = f"{base_path}/{{id}}"
+        pk_path = f"{base_path}/{{{pk_field}}}"
 
-        factory = CrudHandlerFactory(model_cls, resource_name)
+        factory = CrudHandlerFactory(model_cls, resource_name, pk_field)
 
         op_map = {
             "create":   ("POST",   base_path,  factory.create_handler()),
@@ -333,7 +345,7 @@ def _resource_route(method: str, model_cls: type, sub_path: str):
     return decorator
 ```
 
-> ✅ **IMPLEMENTATO** — `@resource` con operations selettive, path_prefix, custom endpoint (`@User.get`, `@User.post`, ecc.). Testato in `test_crud.py`.
+> ✅ **IMPLEMENTATO** — `@resource` usa `ragin_endpoint_name()`, PK dinamico in path (`{pk_field}`), operations selettive, path_prefix, custom endpoint (`@User.get`, `@User.post`, ecc.). Testato in `test_crud.py`.
 
 ---
 
@@ -352,9 +364,10 @@ from ragin.persistence import get_backend
 
 
 class CrudHandlerFactory:
-    def __init__(self, model_cls, resource_name: str):
+    def __init__(self, model_cls, resource_name: str, pk_field: str | None = None):
         self.model_cls = model_cls
         self.resource_name = resource_name
+        self.pk_field = pk_field or model_cls.primary_key_field()
 
     def create_handler(self):
         model_cls = self.model_cls
@@ -385,8 +398,9 @@ class CrudHandlerFactory:
 
     def retrieve_handler(self):
         model_cls = self.model_cls
+        pk_field = self.pk_field
         def handler(request: InternalRequest) -> InternalResponse:
-            pk = request.path_params["id"]
+            pk = request.path_params.get(pk_field)
             backend = get_backend()
             record = backend.get(model_cls, pk)
             if record is None:
@@ -396,20 +410,29 @@ class CrudHandlerFactory:
 
     def update_handler(self):
         model_cls = self.model_cls
+        pk_field = self.pk_field
         def handler(request: InternalRequest) -> InternalResponse:
-            pk = request.path_params["id"]
-            data = request.json_body   # partial update
+            from pydantic import ValidationError
+            pk = request.path_params.get(pk_field)
+            data = request.json_body
             backend = get_backend()
-            record = backend.update(model_cls, pk, data)
-            if record is None:
+            current = backend.get(model_cls, pk)
+            if current is None:
                 return InternalResponse.not_found()
+            merged = {**current, **data}
+            try:
+                model_cls.model_validate(merged)
+            except ValidationError as exc:
+                return InternalResponse.bad_request(exc.errors())
+            record = backend.update(model_cls, pk, data)
             return InternalResponse.ok(record)
         return handler
 
     def delete_handler(self):
         model_cls = self.model_cls
+        pk_field = self.pk_field
         def handler(request: InternalRequest) -> InternalResponse:
-            pk = request.path_params["id"]
+            pk = request.path_params.get(pk_field)
             backend = get_backend()
             deleted = backend.delete(model_cls, pk)
             if not deleted:
@@ -418,7 +441,7 @@ class CrudHandlerFactory:
         return handler
 ```
 
-> ✅ **IMPLEMENTATO** — 5 handler CRUD con 400 (validation), 404 (not found), 409 (duplicate PK IntegrityError). Testato in `test_crud.py`.
+> ✅ **IMPLEMENTATO** — 5 handler CRUD con PK dinamico (`pk_field`), PATCH merge+validate, 400 (validation), 404 (not found), 409 (duplicate PK IntegrityError). Testato in `test_crud.py`.
 
 ---
 
@@ -804,6 +827,10 @@ class ServerlessApp:
         except ValidationError as e:
             response = InternalResponse.bad_request(e.errors())
         except Exception:
+            import logging
+            logging.getLogger("ragin").exception(
+                "Unhandled error in %s %s", request.method, request.path
+            )
             response = InternalResponse.internal_error()
 
         return p.format_response(response)
@@ -1534,7 +1561,7 @@ def test_router_path_params():
     assert params["id"] == "abc-123"
 ```
 
-> ✅ **IMPLEMENTATO** — 37 test V1 + 40 test V2 = 77 test totali, tutti verdi. Test CRUD, models, routing, settings, scaffold, agent, MCP, providers, tools, prompt.
+> ✅ **IMPLEMENTATO** — 37 test V1 + 40 test V2 + 11 edge case = 88 test totali, tutti verdi. Test CRUD, models, routing, settings, scaffold, agent, MCP, providers, tools, prompt.
 
 ---
 

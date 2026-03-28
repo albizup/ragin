@@ -26,15 +26,12 @@ Ragin is a Python framework where you **define a model once** and everything els
 from ragin import ServerlessApp, Field, Model, resource, agent
 from ragin.providers import OpenAIProvider
 
+@agent(provider=OpenAIProvider(model="gpt-4o"))
 @resource(operations=["crud"])
 class User(Model):
     id: str = Field(primary_key=True)
     name: str
     email: str = Field(description="User email address")
-
-@agent(model=User, provider=OpenAIProvider(model="gpt-4o"))
-class UserAgent:
-    pass
 
 app = ServerlessApp()
 ```
@@ -167,8 +164,10 @@ The `@resource` decorator auto-generates 5 endpoints:
 | `POST` | `/products` | Create |
 | `GET` | `/products` | List (supports `?limit=N&offset=N` + field filters) |
 | `GET` | `/products/{id}` | Retrieve |
-| `PATCH` | `/products/{id}` | Update |
+| `PATCH` | `/products/{id}` | Update (merge + full validation) |
 | `DELETE` | `/products/{id}` | Delete |
+
+Endpoint name defaults to the smart-pluralized lowercase class name (e.g. `Product` → `products`, `Category` → `categories`). Override via `Meta.endpoint_name`.
 
 ### Field options
 
@@ -188,17 +187,20 @@ class Article(Model):
     ...
 ```
 
-### Custom table name
+### Custom table and endpoint names
 
 ```python
 @resource(operations=["crud"])
 class User(Model):
     class Meta:
-        table_name = "app_users"
+        table_name = "app_users"      # DB table name
+        endpoint_name = "people"       # REST path: /people, /people/{id}
 
     id: str = Field(primary_key=True)
     name: str
 ```
+
+Defaults (no `Meta`): table name = `users`, endpoint name = `users`.
 
 ### Custom endpoints
 
@@ -228,17 +230,16 @@ Wire an LLM-powered agent to any model with a single decorator. The agent auto-g
 from ragin import Model, Field, resource, agent
 from ragin.providers import OpenAIProvider
 
+# Option 1: Stack @agent directly on @resource (bare or with config)
+@agent(provider=OpenAIProvider(model="gpt-4o"), description="Manages user records.")
 @resource(operations=["crud"])
 class User(Model):
     id: str = Field(primary_key=True)
     name: str
     email: str = Field(description="User email address")
 
-@agent(
-    model=User,
-    provider=OpenAIProvider(model="gpt-4o"),
-    description="Manages user records.",
-)
+# Option 2: Separate agent class referencing the model
+@agent(model=User, provider=OpenAIProvider(model="gpt-4o"))
 class UserAgent:
     pass
 ```
@@ -283,6 +284,7 @@ def send_welcome_email(user_id: str, subject: str):
 ```
 
 The LLM sees all tools (CRUD + custom) and decides when to call them.
+All tools are registered in a unified registry, shared by both `@agent` and the MCP server.
 
 ### Multi-model agent
 
@@ -493,7 +495,7 @@ class TestAgent:
 
 - [x] **V1** — Model-first CRUD, cloud-agnostic runtime, settings system, scaffolding
 - [x] **V2** — `@agent` decorator, multi-provider LLM (OpenAI, Anthropic, Bedrock), MCP server, tool binding
-- [ ] **V3** — Streaming responses, persistent conversation history, hooks, auth/permissions
+- [ ] **V3** — Semantic layer (embeddings, vector search), streaming responses, hooks, auth/permissions
 
 ## License
 

@@ -85,14 +85,23 @@ from ragin.agent.tools import build_crud_tools
 
 
 def agent(
+    _cls=None,                      # supports bare @agent stacking on @resource
+    *,
     model=None,                     # Model class o lista di Model classes
-    provider=None,                  # istanza di BaseProvider (OpenAI, Anthropic, ...)
+    provider=None,                  # istanza di BaseProvider (opzionale)
     description: str = "",          # aggiunto al system prompt
     tools: list[str] | None = None, # "crud" (default), lista operazioni, o nomi custom
     history_backend=None,           # None = stateless, futuro: "dynamodb"
 ):
     def decorator(cls):
-        models = [model] if not isinstance(model, list) else model
+        # Determina i modelli
+        if model is not None:
+            models = [model] if not isinstance(model, list) else model
+        elif hasattr(cls, "_ragin_resource_name"):
+            models = [cls]
+        else:
+            raise ValueError("@agent: no model specified and class is not a @resource.")
+
         tool_defs = _resolve_tools(models, tools or ["crud"])
         system_prompt = generate_system_prompt(models, description)
 
@@ -102,10 +111,14 @@ def agent(
             tools=tool_defs,
         )
 
+        # Registra tool nel registro globale
+        registry.register_tools(tool_defs)
+
         # Registra l'endpoint POST /<resource>/agent
         for m in models:
-            resource_name = m.__name__.lower() + "s"
-            path = f"/{resource_name}/agent"
+            resource_name = getattr(m, "_ragin_resource_name", m.ragin_endpoint_name())
+            base_path = getattr(m, "_ragin_base_path", f"/{resource_name}")
+            path = f"{base_path}/agent"
 
             def _make_handler(r=runner):
                 def handler(request):
@@ -159,6 +172,11 @@ from ragin.providers import OpenAIProvider
 
 app = ServerlessApp()
 
+# Pattern consigliato: stacking diretto
+@agent(
+    provider=OpenAIProvider(model="gpt-4o"),
+    description="Manages user records. Can create, list, retrieve, update and delete users.",
+)
 @resource(operations=["crud"])
 class User(Model):
     id: str = Field(primary_key=True)
@@ -166,22 +184,18 @@ class User(Model):
     email: str = Field(description="Indirizzo email dell'utente")
     role: str = "member"
 
-
-@agent(
-    model=User,
-    provider=OpenAIProvider(model="gpt-4o"),
-    description="Manages user records. Can create, list, retrieve, update and delete users.",
-)
-class UserAgent:
-    pass
+# Pattern alternativo: classe agente separata
+# @agent(model=User, provider=OpenAIProvider(model="gpt-4o"))
+# class UserAgent: pass
 ```
 
 Genera automaticamente:
 - Endpoint `POST /users/agent`
 - 5 tool MCP: `create_user`, `list_users`, `get_user`, `update_user`, `delete_user`
 - System prompt con schema User e descrizione
+- Tool registrati nel registro globale (`registry.get_all_tools()`)
 
-> ✅ **IMPLEMENTATO** — `@agent` decorator registra endpoint `POST /<resource>/agent`, genera tool CRUD, system prompt, supporta `model` singolo o lista. Custom tools via `@MyAgent.tool`. Testato in `test_agent_decorator.py`.
+> ✅ **IMPLEMENTATO** — `@agent` decorator supporta bare stacking (`@agent` su `@resource`) e pattern tradizionale (`model=...`). Usa `ragin_endpoint_name()` e `_ragin_base_path` per i path. Tool registrati nel registro globale via `registry.register_tools()`. Custom tools via `@MyAgent.tool`. Testato in `test_agent_decorator.py`.
 
 ---
 
@@ -289,11 +303,7 @@ def build_crud_tools(
     Se operations è None, genera tutte e 5.
     """
     ops = operations or ["create", "list", "retrieve", "update", "delete"]
-    resource_name = model_cls.__name__.lower() + "s"
-    singular = model_cls.__name__.lower()
-    tools = []
-
-    schema = _model_json_schema(model_cls)
+    resource_name = getattr(model_cls, "_ragin_resource_name", None) or model_cls.ragin_endpoint_name()\n    singular = model_cls.__name__.lower()\n    pk_field = model_cls.primary_key_field()
     pk_field = model_cls.primary_key_field()
 
     if "create" in ops:
@@ -381,7 +391,7 @@ def _field_schema(field_info) -> dict:
     return {"type": type_map.get(type_name, "string")}
 
 
-def _make_crud_caller(method: str, path_template: str) -> Callable:
+def _make_crud_caller(method: str, path_template: str, pk_field: str = "id") -> Callable:
     """
     Crea un handler che costruisce un InternalRequest e lo passa
     al ServerlessApp. Il tool chiama la stessa API CRUD interna.
@@ -392,17 +402,18 @@ def _make_crud_caller(method: str, path_template: str) -> Callable:
         from ragin.core.routing import Router
         import json
 
-        # Risolve {id} nel path
+        # Risolve {pk_field} nel path
         path = path_template
-        if "{id}" in path and "id" in arguments:
-            path = path.replace("{id}", str(arguments["id"]))
+        pk_placeholder = f"{{{pk_field}}}"
+        if pk_placeholder in path and pk_field in arguments:
+            path = path.replace(pk_placeholder, str(arguments[pk_field]))
 
         if method == "GET":
-            query = {k: v for k, v in arguments.items() if k != "id"}
+            query = {k: v for k, v in arguments.items() if k != pk_field}
             body = None
         else:
             query = {}
-            body = {k: v for k, v in arguments.items() if k != "id"} if method != "DELETE" else None
+            body = {k: v for k, v in arguments.items() if k != pk_field} if method != "DELETE" else None
 
         request = InternalRequest(
             method=method,
@@ -445,7 +456,7 @@ Il tool `create_user` genera:
 }
 ```
 
-> ✅ **IMPLEMENTATO** — `build_crud_tools()` genera 5 tool con JSON schema, `_make_crud_caller()` dispatch interno via Router. Nota: il POST (create) include correttamente l'`id` nel body (bug fix applicato). Testato in `test_agent_tools.py`.
+> ✅ **IMPLEMENTATO** — `build_crud_tools()` genera 5 tool con JSON schema, PK dinamico (`pk_field`). `_make_crud_caller()` usa path con `{pk_field}` e filtra su campo PK corretto. Testato in `test_agent_tools.py`.
 
 ---
 
@@ -609,7 +620,7 @@ AgentRunner.run("Crea un utente Alice...")
          {"message": "Ho creato l'utente Alice...", "tool_calls": [...]}
 ```
 
-> ✅ **IMPLEMENTATO** — `AgentRunner` con loop LLM + tool calls, MAX_ITERATIONS=10, `register_custom_tool()`, schema tool in formato OpenAI function-calling. Testato in `test_agent_runner.py`.
+> ✅ **IMPLEMENTATO** — `AgentRunner` con loop LLM + tool calls, MAX_ITERATIONS=10, `register_custom_tool()` (ritorna `ToolDefinition`), provider opzionale. Schema tool in formato OpenAI function-calling. Testato in `test_agent_runner.py`.
 
 ---
 
@@ -1418,7 +1429,7 @@ def test_system_prompt_contains_model_info():
     assert "Manages users." in prompt
 ```
 
-> ✅ **IMPLEMENTATO** — 77 test totali (37 V1 + 40 V2), tutti verdi. Test coprono: agent decorator, runner, tools, prompt, MCP server, providers base, lazy imports. MockProvider usato per test senza chiamate API reali.
+> ✅ **IMPLEMENTATO** — 88 test totali (37 V1 + 40 V2 + 11 edge case), tutti verdi. Test coprono: agent decorator (bare stacking, custom name, path_prefix), runner, tools (PK dinamico), prompt, MCP server, providers base, lazy imports, PATCH validation, non-id PK.
 
 ---
 

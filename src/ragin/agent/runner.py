@@ -26,17 +26,17 @@ class AgentRunner:
 
     def __init__(
         self,
-        provider: BaseProvider,
-        system_prompt: str,
-        tools: list[ToolDefinition],
+        provider: BaseProvider | None = None,
+        system_prompt: str = "",
+        tools: list[ToolDefinition] | None = None,
     ) -> None:
-        self.provider = provider
+        self._provider = provider
         self.system_prompt = system_prompt
-        self._tools: dict[str, ToolDefinition] = {t.name: t for t in tools}
-        self._tool_schemas: list[dict] = [_to_schema(t) for t in tools]
+        self._tools: dict[str, ToolDefinition] = {t.name: t for t in (tools or [])}
+        self._tool_schemas: list[dict] = [_to_schema(t) for t in (tools or [])]
 
-    def register_custom_tool(self, fn: Callable) -> None:
-        """Register a user-defined tool function on this runner."""
+    def register_custom_tool(self, fn: Callable) -> ToolDefinition:
+        """Register a user-defined tool function on this runner. Returns the ToolDefinition."""
         sig = inspect.signature(fn)
         params: dict[str, dict] = {}
         required: list[str] = []
@@ -53,9 +53,15 @@ class AgentRunner:
         )
         self._tools[td.name] = td
         self._tool_schemas.append(_to_schema(td))
+        return td
 
     def run(self, user_message: str, *, thread_id: str | None = None) -> dict[str, Any]:
         """Execute the agent loop. Returns a dict with message, tool_calls, thread_id."""
+        if self._provider is None:
+            raise RuntimeError(
+                "No LLM provider configured for this agent. "
+                "Pass provider= to @agent, e.g. @agent(provider=OpenAIProvider(model='gpt-4o'))"
+            )
         messages: list[dict] = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_message},
@@ -63,7 +69,7 @@ class AgentRunner:
         all_tool_calls: list[dict] = []
 
         for _ in range(MAX_ITERATIONS):
-            response: AgentResponse = self.provider.complete(
+            response: AgentResponse = self._provider.complete(
                 messages=messages,
                 tools=self._tool_schemas if self._tool_schemas else None,
             )
