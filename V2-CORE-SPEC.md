@@ -21,12 +21,12 @@ Cosa è incluso in V2:
 - Stateless by default, con opzione `thread_id` per history esterna
 
 Cosa NON è incluso in V2:
-- Provider LangChain, PydanticAI (V3)
-- Conversation history persistente DynamoDB (V3)
-- Hooks before/after (V3)
-- Multi-model agent (V3) → **nota: il decorator `@agent` supporta già `model=[A, B]`**
-- Streaming LLM response (V3)
-- Auth/permissions (V3)
+- Semantic search / embeddings / vector store (V3)
+- Conversation history persistente (V4)
+- Hooks before/after (V4)
+- Streaming LLM response (V4)
+- Auth/permissions (V4)
+- Step Functions / orchestrazione async (V4)
 
 ---
 
@@ -1465,5 +1465,5 @@ Il codice agent/mcp dipende solo dai moduli ragin V1.
 - Conversation history persistente (stateless, thread_id è solo un passthrough)
 - Auth/permissions sugli endpoint agent
 - Multi-agent orchestration
-- Provider LangChain / PydanticAI (V3)
+- Semantic search / embeddings / vector store → V3
 - Deploy automatico (rimane build-only)

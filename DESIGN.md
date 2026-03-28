@@ -13,6 +13,7 @@ e ottenere automaticamente:
 - schema database
 - un **AI agent serverless** con tool binding automatico sugli endpoint generati
 - un **MCP server serverless** che espone i tool dell'agente via HTTP
+- **semantic search** automatica con embeddings e vector store
 
 L'obiettivo è abbassare a zero il boilerplate per costruire API + AI agent su infrastruttura
 serverless, mantenendo la flessibilità di override su ogni livello.
@@ -57,6 +58,7 @@ class User(Model):
     id: str = Field(primary_key=True)
     name: str
     email: str
+    bio: str = Field(embedding=True)   # V3: auto-embedding per semantic search
     role: str = "member"
 
 
@@ -67,9 +69,6 @@ class User(Model):
 )
 class UserAgent:
     pass
-
-
-app.register_agent(UserAgent)
 ```
 
 Quello che viene generato automaticamente:
@@ -80,6 +79,7 @@ Quello che viene generato automaticamente:
 | CRUD API      | `POST/GET /users`, `GET/PATCH/DELETE /users/{id}`             |
 | MCP Server    | Lambda MCP con tool `create_user`, `list_users`, ecc.         |
 | Agent         | Lambda agent su `POST /users/agent`                           |
+| Semantic      | Tool `semantic_search_users` + embedding pipeline auto (V3)   |
 | System Prompt | Generato dallo schema del modello + `description`             |
 | OpenAPI       | `openapi.json` completo                                       |
 
@@ -96,11 +96,30 @@ Client
 API Gateway
   ├── /users          →  CRUD Lambda
   ├── /users/{id}     →  CRUD Lambda
-  ├── /users/agent    →  Agent Lambda
+  ├── /users/agent    →  Agent Lambda  (CRUD tools + semantic tools)
+  ├── /users/search   →  Semantic Search Lambda  (V3)
   └── /mcp            →  MCP Lambda
 ```
 
 Ogni blocco è una Lambda indipendente. Non c'è un server condiviso.
+
+### 4.1b Layered Architecture
+
+```
+┌──────────────────────────────────────────────┐
+│  Layer 3 — Semantic (V3)                     │
+│  Field(embedding=True) → EmbeddingProvider   │
+│  → VectorBackend → semantic_search tools     │
+├──────────────────────────────────────────────┤
+│  Layer 2 — Agent (V2)                        │
+│  @agent → LLM Provider → AgentRunner         │
+│  → Tool Registry → MCP Server                │
+├──────────────────────────────────────────────┤
+│  Layer 1 — Core (V1)                         │
+│  Model → Field → @resource → CRUD            │
+│  → SqlBackend → Runtime Provider             │
+└──────────────────────────────────────────────┘
+```
 
 ### 4.2 CRUD Lambda
 
@@ -167,6 +186,7 @@ class User(Model):
     id: str = Field(primary_key=True)
     name: str
     email: str = Field(unique=True)
+    bio: str = Field(embedding=True)   # V3: genera embedding automatico
     role: str = "member"
 ```
 
@@ -180,6 +200,7 @@ Field(
     unique=False,
     index=False,
     description="",   # usato nel system prompt dell'agente
+    embedding=False,   # V3: se True, genera embedding per semantic search
 )
 ```
 
@@ -492,24 +513,27 @@ ragin/
     openai.py
     anthropic.py
     bedrock.py
-    langchain.py
-    pydantic_ai.py
+
+  embeddings/         # V3
+    base.py           # BaseEmbeddingProvider ABC
+    openai.py         # OpenAIEmbeddingProvider
+    bedrock.py        # BedrockEmbeddingProvider
+
+  vector/             # V3
+    base.py           # BaseVectorBackend ABC
+    sqlite.py         # SQLiteVectorBackend (brute-force cosine, dev)
+    pgvector.py       # PgVectorBackend (pgvector extension, prod)
 
   persistence/
     base.py           # BaseBackend ABC
     sql.py            # SQLAlchemy Core backend
     schema.py         # generazione Table da Model
-    dynamodb.py       # DynamoDB backend (futuro)
 
   cli/
     main.py           # ragin start / dev / build
     scaffold.py       # project scaffolding (ragin start)
     dev_server.py     # Werkzeug WSGI dev server
     builder.py        # ragin build
-
-  deploy/             # futuro
-    aws_cdk.py        # CDK stack generata
-    terraform.py      # Terraform output (futuro)
 ```
 
 ### Struttura Progetto Utente (generata da `ragin start`)
@@ -517,10 +541,9 @@ ragin/
 ```
 myproject/
 ├── main.py              # ServerlessApp + import modelli
-├── settings.py          # DATABASE_URL, PROVIDER, HOST, PORT, DEBUG
+├── settings.py          # DATABASE_URL, EMBEDDING_PROVIDER, ecc.
 └── models/
-    ├── __init__.py      # registry dei modelli
-    └── user.py          # modello User di esempio
+    └── __init__.py      # crea i tuoi modelli qui
 ```
 
 ### Settings (Django-style)
@@ -535,6 +558,11 @@ PROVIDER = "local"       # local | aws | gcp | azure
 DEBUG = True
 HOST = "127.0.0.1"
 PORT = 8000
+
+# V3 — Semantic Layer
+EMBEDDING_PROVIDER = "openai"    # openai | bedrock | none
+EMBEDDING_MODEL = "text-embedding-3-small"
+VECTOR_BACKEND = "auto"          # auto | sqlite | pgvector
 ```
 
 Precedenza (highest wins):
@@ -558,30 +586,40 @@ Precedenza (highest wins):
 - [x] Custom endpoints (`@app.get`, `@User.get`)
 - [x] Selective operations (`operations=["create", "list", "retrieve"]`)
 
-### V2 — Agent + MCP
-- [ ] `@agent` decorator
-- [ ] MCP Lambda serverless
-- [ ] Provider: OpenAI, Anthropic, Bedrock
-- [ ] System prompt auto-generato
-- [ ] Tool binding CRUD → MCP
-- [ ] Tool custom su agente
+### V2 — Agent + MCP ✅
+- [x] `@agent` decorator
+- [x] MCP server (JSON-RPC: initialize, tools/list, tools/call)
+- [x] Provider: OpenAI, Anthropic, Bedrock
+- [x] System prompt auto-generato
+- [x] Tool binding CRUD → MCP
+- [x] Tool custom su agente (`@MyAgent.tool`)
+- [x] Multi-model agent (`model=[User, Task]`)
 
-### V3 — Advanced
-- [ ] Provider: LangChain, PydanticAI
-- [ ] Conversation history (DynamoDB)
-- [ ] Hooks before/after
-- [ ] Multi-model agent
-- [ ] Auth/permissions
-- [ ] Migration engine
-- [ ] `ragin deploy` (IaC automatico)
+### V3 — Semantic Layer
+- [ ] `Field(embedding=True)` — marca i campi per embedding automatico
+- [ ] `EmbeddingProvider` — astrazione per generare embeddings (OpenAI, Bedrock)
+- [ ] `VectorBackend` — astrazione per vector store (SQLite brute-force dev, pgvector prod)
+- [ ] Pipeline auto: insert/update → genera embedding → salva in vector store
+- [ ] Tool auto-generati: `semantic_search_{resource}(query, limit)`
+- [ ] Endpoint REST: `POST /{resource}/search` per semantic search diretta
+- [ ] Cross-table reasoning: agent con CRUD + semantic tools su più modelli
+
+### V4 — Advanced
 - [ ] Streaming LLM response
+- [ ] Conversation history persistente
+- [ ] Hooks before/after
+- [ ] Auth/permissions
+- [ ] Step Functions / orchestrazione async per task complessi
+- [ ] `ragin deploy` (IaC automatico)
 
 ---
 
-## 13. Non-Goals (V1)
+## 13. Non-Goals (fino a V3)
 
 - Complex SQL join automatici
 - Auth avanzata built-in
 - Migrations automatiche
-- Deploy automatico (V1 produce solo i file)
-- Streaming LLM response (V3)
+- Deploy automatico (produce solo i file, il deploy è manuale)
+- Streaming LLM response (V4)
+- Step Functions / orchestrazione async (V4)
+- FAISS o vector DB separati (pgvector è sufficiente per prod)
